@@ -1,6 +1,6 @@
-use std::sync::{Arc, RwLock};
-use std::collections::HashMap;
 use crate::protocol::SwarmMessage;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 /// Represents a compute node in the swarm.
 pub struct WorkerNode {
@@ -26,8 +26,11 @@ impl Orchestrator {
 
     /// Handles a new node joining the swarm and assigns computation layers.
     pub fn handle_join(&self, device_id: String, power: u32) -> SwarmMessage {
-        let mut workers = self.workers.write().expect("Failed to lock workers for writing");
-        
+        let mut workers = self
+            .workers
+            .write()
+            .expect("Failed to lock workers for writing");
+
         // Dynamic layer assignment logic based on compute power.
         // For the PoC, we assign all layers to the node.
         let node = WorkerNode {
@@ -35,9 +38,9 @@ impl Orchestrator {
             compute_power: power,
             assigned_layers: (0..self.total_model_layers).collect(),
         };
-        
+
         workers.insert(device_id, node);
-        
+
         SwarmMessage::JoinResponse {
             assigned_layers: (0..self.total_model_layers).collect(),
             total_layers: self.total_model_layers,
@@ -46,7 +49,10 @@ impl Orchestrator {
 
     /// Removes a node from the swarm.
     pub fn handle_leave(&self, device_id: &str) {
-        let mut workers = self.workers.write().expect("Failed to lock workers for writing");
+        let mut workers = self
+            .workers
+            .write()
+            .expect("Failed to lock workers for writing");
         workers.remove(device_id);
     }
 }
