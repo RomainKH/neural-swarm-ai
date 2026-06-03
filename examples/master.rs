@@ -19,7 +19,7 @@ async fn main() {
 
     let addr = "127.0.0.1:3000";
     let listener = TcpListener::bind(addr).await.unwrap();
-    
+
     println!("🚀 Server is running!");
     println!("🔌 Waiting for workers to connect at ws://{}/swarm", addr);
 

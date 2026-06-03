@@ -89,10 +89,14 @@ pub mod client {
     use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
     /// Connects to a NeuralSwarmAI cluster.
-    pub async fn connect_to_cluster(url: &str, profile: NodeProfile, status: NodeStatus) -> Result<()> {
+    pub async fn connect_to_cluster(
+        url: &str,
+        profile: NodeProfile,
+        status: NodeStatus,
+    ) -> Result<()> {
         let (ws_stream, _) = connect_async(url).await?;
         println!("🔗 Connected to swarm at {}", url);
-        
+
         let (mut write, mut read) = ws_stream.split();
 
         // 1. Send NodeAnnounce
@@ -106,8 +110,10 @@ pub mod client {
 
         // 2. Wait for JoinResponse
         if let Some(Ok(Message::Binary(bin))) = read.next().await {
-            if let Ok(SwarmMessage::JoinResponse { assigned_layers, total_layers }) =
-                bincode::deserialize::<SwarmMessage>(&bin)
+            if let Ok(SwarmMessage::JoinResponse {
+                assigned_layers,
+                total_layers,
+            }) = bincode::deserialize::<SwarmMessage>(&bin)
             {
                 println!(
                     "🎉 Handshake success! Assigned {} / {} layers: {:?}",
@@ -120,7 +126,7 @@ pub mod client {
 
         // 3. Keep connection open for the PoC
         println!("⏳ Waiting for tasks...");
-        while let Some(_) = read.next().await {}
+        while read.next().await.is_some() {}
 
         Ok(())
     }
