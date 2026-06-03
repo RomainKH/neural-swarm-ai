@@ -22,7 +22,8 @@ It enables running massive models (e.g., 70B+ parameters) on a network of consum
 ## ✨ Key Features
 
 - **Pipeline Parallelism**: Distribute LLM layers across multiple nodes.
-- **Dynamic Orchestration**: Automatically assign layers based on node compute power with proportional distribution.
+- **Dynamic Orchestration**: Real-time resource monitoring and automatic workload rebalancing based on current usage.
+- **Safety Margins**: Device-aware resource reservation (Servers vs Laptops vs Mobiles) to prevent host machine lag.
 - **Backend Agnostic**: Bring your own inference engine — llama.cpp, candle, or any custom implementation.
 - **Zero-Copy Optimization**: Uses `Bytes` for efficient memory management during network transfers.
 - **Security-First**: Native support for mTLS and encrypted tensor transfers (AES-256-GCM).
@@ -98,18 +99,18 @@ The Master node manages the cluster and distributes computation tasks proportion
 
 ```rust
 use neural_swarm_ai::Orchestrator;
+use neural_swarm_ai::compute::{NodeProfile, DeviceType, NodeStatus};
 
 fn main() {
     // Initialize an orchestrator for a 32-layer model
     let orchestrator = Orchestrator::new(32);
 
-    // Nodes join the swarm — layers are distributed by compute power
-    let resp = orchestrator.handle_join("gpu-node".into(), 200).unwrap();
-    println!("GPU node assigned: {:?}", resp);
+    // Nodes announce themselves to the swarm
+    let profile = NodeProfile::custom(DeviceType::Desktop, 8, 16384, "gpu-node".into());
+    let status = NodeStatus::unknown();
 
-    let resp = orchestrator.handle_join("cpu-node".into(), 50).unwrap();
-    println!("CPU node assigned: {:?}", resp);
-    // gpu-node gets ~26 layers, cpu-node gets ~6 layers
+    let resp = orchestrator.handle_announce("gpu-node".into(), profile, status).unwrap();
+    println!("Node assigned layers: {:?}", resp);
 }
 ```
 
@@ -118,10 +119,18 @@ fn main() {
 The worker processes the layers assigned to it using any inference backend.
 
 ```rust
-use neural_swarm_ai::{Executor, InferenceBackend};
+use neural_swarm_ai::Executor;
+use neural_swarm_ai::compute::{ComputeMonitor, NodeProfile};
 
-fn main() {
-    let executor = Executor::new("node-1".into());
+#[tokio::main]
+async fn main() {
+    // Auto-detect the hardware profile
+    let profile = NodeProfile::detect();
+    let executor = Executor::new(profile.hostname.clone());
+
+    // Start background resource monitoring
+    let (monitor, _status_rx) = ComputeMonitor::new(Default::default());
+    tokio::spawn(monitor.run());
 
     // Use any backend implementing InferenceBackend:
     // let result = executor.run_task(&mut my_backend, task_message).unwrap();

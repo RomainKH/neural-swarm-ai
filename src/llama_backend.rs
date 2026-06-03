@@ -22,15 +22,21 @@ use llama_cpp_2::context::LlamaContext;
 /// let result = executor.run_task(&mut backend, task)?;
 /// ```
 pub struct LlamaBackend<'a> {
-    ctx: &'a mut LlamaContext,
+    ctx: &'a mut LlamaContext<'a>,
 }
 
 impl<'a> LlamaBackend<'a> {
     /// Wraps an existing `LlamaContext` into a NeuralSwarmAI-compatible backend.
-    pub fn new(ctx: &'a mut LlamaContext) -> Self {
+    pub fn new(ctx: &'a mut LlamaContext<'a>) -> Self {
         Self { ctx }
     }
 }
+
+// SAFETY: We guarantee that methods on `InferenceBackend` are not called concurrently
+// on the same instance (it requires `&mut self` for mutable operations) and it is safe
+// to move the backend across thread boundaries in the tokio executor.
+unsafe impl Send for LlamaBackend<'_> {}
+unsafe impl Sync for LlamaBackend<'_> {}
 
 impl InferenceBackend for LlamaBackend<'_> {
     fn set_state(&mut self, state: &[u8]) -> Result<()> {

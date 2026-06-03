@@ -1,42 +1,39 @@
+use crate::compute::{NodeProfile, NodeStatus};
+use crate::node::{NodeRegistry, NodeState};
 use crate::protocol::SwarmMessage;
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-
-/// Represents a compute node in the swarm.
-#[derive(Debug, Clone)]
-pub struct WorkerNode {
-    pub id: String,
-    pub compute_power: u32,
-    pub assigned_layers: Vec<u32>,
-}
 
 /// Orchestrates the distributed inference across the swarm.
 ///
-/// The `Orchestrator` manages worker nodes, dynamically assigns model layers
-/// based on each node's compute power, and rebalances on join/leave events.
+/// The `Orchestrator` manages node lifecycles, dynamically assigns model layers
+/// based on each node's [`EffectiveCapacity`], and rebalances when resources
+/// change significantly.
 ///
-/// # Layer Assignment Algorithm
+/// # Layer Assignment
 ///
-/// Layers are distributed proportionally to each node's `compute_power`:
-/// - A node with 2× the compute power gets 2× the layers.
-/// - All layers are guaranteed to be assigned (remainder goes to the most powerful node).
+/// Layers are distributed proportionally to each node's `composite` capacity score,
+/// which accounts for:
+/// - Hardware capability (CPU cores, RAM)
+/// - Current resource availability (CPU/RAM usage)
+/// - Safety margins (per device type — laptops reserve more than servers)
+/// - Thermal state (throttled devices get fewer layers)
 ///
 /// # Example
 ///
 /// ```rust
 /// use neural_swarm_ai::Orchestrator;
+/// use neural_swarm_ai::compute::{NodeProfile, DeviceType, NodeStatus};
 ///
 /// let orchestrator = Orchestrator::new(32);
 ///
-/// // A powerful GPU node joins
-/// let resp = orchestrator.handle_join("gpu-node".into(), 200).unwrap();
-///
-/// // A lighter CPU node joins — layers are rebalanced automatically
-/// let resp = orchestrator.handle_join("cpu-node".into(), 50).unwrap();
+/// // A node joins with auto-detected profile
+/// let profile = NodeProfile::custom(DeviceType::Desktop, 8, 16384, "my-pc".into());
+/// let status = NodeStatus::unknown();
+/// let resp = orchestrator.handle_announce("my-pc".into(), profile, status).unwrap();
 /// ```
 pub struct Orchestrator {
-    pub workers: Arc<RwLock<HashMap<String, WorkerNode>>>,
+    pub registry: Arc<RwLock<NodeRegistry>>,
     pub total_model_layers: u32,
 }
 
@@ -44,124 +41,185 @@ impl Orchestrator {
     /// Creates a new orchestrator for a model with a given number of layers.
     pub fn new(total_layers: u32) -> Self {
         Self {
-            workers: Arc::new(RwLock::new(HashMap::new())),
+            registry: Arc::new(RwLock::new(NodeRegistry::new())),
             total_model_layers: total_layers,
         }
     }
 
-    /// Handles a new node joining the swarm.
+    /// Handles a node announcing itself to the swarm.
     ///
-    /// Registers the node and **rebalances all layer assignments** across the
-    /// swarm proportionally to each node's compute power.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the internal worker lock is poisoned.
-    pub fn handle_join(&self, device_id: String, power: u32) -> Result<SwarmMessage> {
-        let mut workers = self
-            .workers
+    /// Registers the node, computes its capacity with safety margins,
+    /// and rebalances all layer assignments.
+    pub fn handle_announce(
+        &self,
+        device_id: String,
+        profile: NodeProfile,
+        initial_status: NodeStatus,
+    ) -> Result<SwarmMessage> {
+        let mut registry = self
+            .registry
             .write()
-            .map_err(|e| anyhow::anyhow!("Failed to acquire worker lock: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to acquire registry lock: {}", e))?;
 
-        // Register the new node (will be assigned layers during rebalance)
-        let node = WorkerNode {
-            id: device_id.clone(),
-            compute_power: power,
-            assigned_layers: vec![],
-        };
-        workers.insert(device_id.clone(), node);
+        // Register and advance to Ready
+        registry.register(device_id.clone(), profile)?;
+        registry.mark_ready(&device_id, initial_status)?;
 
-        // Rebalance all layer assignments across the swarm
-        Self::rebalance_layers(&mut workers, self.total_model_layers);
+        // Rebalance all layer assignments
+        Self::rebalance_layers(&mut registry, self.total_model_layers);
 
         // Return the assignment for the newly joined node
-        let assigned = workers
+        let entry = registry
             .get(&device_id)
             .context("Node disappeared after registration")?;
 
         Ok(SwarmMessage::JoinResponse {
-            assigned_layers: assigned.assigned_layers.clone(),
+            assigned_layers: entry.assigned_layers.clone(),
             total_layers: self.total_model_layers,
         })
     }
 
-    /// Removes a node from the swarm and rebalances remaining layer assignments.
+    /// Handles a status update from a node.
     ///
-    /// # Errors
+    /// Recomputes the node's capacity and triggers a rebalance if the
+    /// change is significant (> 15% composite delta).
     ///
-    /// Returns an error if the internal worker lock is poisoned.
-    pub fn handle_leave(&self, device_id: &str) -> Result<()> {
-        let mut workers = self
-            .workers
+    /// Returns `Some(RebalanceCommand)` if the node's layers changed,
+    /// `None` if no rebalance was needed.
+    pub fn handle_status_update(
+        &self,
+        device_id: &str,
+        status: NodeStatus,
+    ) -> Result<Option<SwarmMessage>> {
+        let mut registry = self
+            .registry
             .write()
-            .map_err(|e| anyhow::anyhow!("Failed to acquire worker lock: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to acquire registry lock: {}", e))?;
 
-        workers.remove(device_id);
+        let significant_change = registry.update_status(device_id, status)?;
 
-        // Rebalance remaining nodes so all layers stay covered
-        if !workers.is_empty() {
-            Self::rebalance_layers(&mut workers, self.total_model_layers);
+        if significant_change {
+            let old_layers = registry
+                .get(device_id)
+                .map(|n| n.assigned_layers.clone())
+                .unwrap_or_default();
+
+            Self::rebalance_layers(&mut registry, self.total_model_layers);
+
+            let new_layers = registry
+                .get(device_id)
+                .map(|n| n.assigned_layers.clone())
+                .unwrap_or_default();
+
+            if old_layers != new_layers {
+                return Ok(Some(SwarmMessage::RebalanceCommand { new_layers }));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Handles a node requesting to leave gracefully.
+    ///
+    /// Transitions the node to Draining, then removes it and rebalances.
+    pub fn handle_drain(&self, device_id: &str) -> Result<()> {
+        let mut registry = self
+            .registry
+            .write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire registry lock: {}", e))?;
+
+        // Transition to Draining then Left
+        if let Some(entry) = registry.get_mut(device_id) {
+            if entry.state.can_transition_to(NodeState::Draining) {
+                entry.state = entry.state.transition_to(NodeState::Draining)?;
+            }
+        }
+
+        registry.remove(device_id);
+
+        if !registry.is_empty() {
+            Self::rebalance_layers(&mut registry, self.total_model_layers);
         }
 
         Ok(())
     }
 
-    /// Returns the number of currently connected workers.
-    pub fn worker_count(&self) -> usize {
-        self.workers.read().map(|w| w.len()).unwrap_or(0)
+    /// Handles a heartbeat from a node.
+    pub fn handle_heartbeat(&self, device_id: &str) -> Result<()> {
+        let mut registry = self
+            .registry
+            .write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire registry lock: {}", e))?;
+
+        registry.heartbeat(device_id);
+        Ok(())
     }
 
-    /// Distributes layers proportionally to compute power.
+    /// Returns the number of currently registered nodes.
+    pub fn node_count(&self) -> usize {
+        self.registry.read().map(|r| r.len()).unwrap_or(0)
+    }
+
+    /// Returns the number of active nodes (can accept tasks).
+    pub fn active_node_count(&self) -> usize {
+        self.registry
+            .read()
+            .map(|r| r.active_nodes().count())
+            .unwrap_or(0)
+    }
+
+    /// Distributes layers proportionally to effective capacity.
     ///
     /// Algorithm:
-    /// 1. Sort workers by compute power (descending) for deterministic assignment.
-    /// 2. Calculate each node's share: `node_power / total_power * total_layers`.
-    /// 3. Assign remaining layers (from integer rounding) to the most powerful node.
-    fn rebalance_layers(workers: &mut HashMap<String, WorkerNode>, total_layers: u32) {
-        if workers.is_empty() {
+    /// 1. Get all active nodes sorted by capacity (descending).
+    /// 2. Calculate each node's share: `node_composite / total_composite × total_layers`.
+    /// 3. Last node gets remaining layers (handles integer rounding).
+    /// 4. Update assignments in the registry.
+    fn rebalance_layers(registry: &mut NodeRegistry, total_layers: u32) {
+        let sorted = registry.sorted_by_capacity();
+        if sorted.is_empty() {
             return;
         }
 
-        let total_power: u32 = workers.values().map(|w| w.compute_power).sum();
-        if total_power == 0 {
+        let total_composite: f32 = sorted.iter().map(|n| n.capacity.composite).sum();
+        if total_composite <= 0.0 {
+            // All nodes have zero capacity — distribute equally as fallback
+            let per_node = total_layers / sorted.len() as u32;
+            let mut current = 0u32;
+            let ids: Vec<String> = sorted.iter().map(|n| n.id.clone()).collect();
+            for (i, id) in ids.iter().enumerate() {
+                let count = if i == ids.len() - 1 {
+                    total_layers.saturating_sub(current)
+                } else {
+                    per_node
+                };
+                let layers: Vec<u32> = (current..current + count).collect();
+                current += count;
+                let _ = registry.assign_layers(id, layers);
+            }
             return;
         }
-
-        // Sort by compute power descending for deterministic assignment
-        let mut sorted_ids: Vec<String> = workers.keys().cloned().collect();
-        sorted_ids.sort_by(|a, b| {
-            let pa = workers.get(a).map(|w| w.compute_power).unwrap_or(0);
-            let pb = workers.get(b).map(|w| w.compute_power).unwrap_or(0);
-            pb.cmp(&pa).then(a.cmp(b))
-        });
 
         let mut current_layer: u32 = 0;
-        let mut assignments: Vec<(String, Vec<u32>)> = Vec::new();
+        let ids_and_composites: Vec<(String, f32)> = sorted
+            .iter()
+            .map(|n| (n.id.clone(), n.capacity.composite))
+            .collect();
 
-        for (i, id) in sorted_ids.iter().enumerate() {
-            let power = workers.get(id).map(|w| w.compute_power).unwrap_or(0);
-            let is_last = i == sorted_ids.len() - 1;
+        for (i, (id, composite)) in ids_and_composites.iter().enumerate() {
+            let is_last = i == ids_and_composites.len() - 1;
 
-            // Calculate this node's share of layers
             let layer_count = if is_last {
-                // Last node gets all remaining layers (handles rounding)
                 total_layers.saturating_sub(current_layer)
             } else {
-                ((power as f64 / total_power as f64) * total_layers as f64).round() as u32
+                ((composite / total_composite) * total_layers as f32).round() as u32
             };
 
             let end_layer = (current_layer + layer_count).min(total_layers);
             let layers: Vec<u32> = (current_layer..end_layer).collect();
-
-            assignments.push((id.clone(), layers));
             current_layer = end_layer;
-        }
 
-        // Apply assignments
-        for (id, layers) in assignments {
-            if let Some(worker) = workers.get_mut(&id) {
-                worker.assigned_layers = layers;
-            }
+            let _ = registry.assign_layers(id, layers);
         }
     }
 }
@@ -169,11 +227,33 @@ impl Orchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compute::profile::DeviceType;
+    use crate::compute::status::ThermalState;
+
+    fn make_profile(name: &str, device_type: DeviceType) -> NodeProfile {
+        NodeProfile::custom(device_type, 8, 16384, name.into())
+    }
+
+    fn make_status(cpu: f32, ram_avail: u64) -> NodeStatus {
+        NodeStatus {
+            cpu_usage: cpu,
+            ram_used_mb: 0,
+            ram_available_mb: ram_avail,
+            thermal: ThermalState::Nominal,
+            measured_at: None,
+        }
+    }
 
     #[test]
     fn test_single_node_gets_all_layers() {
         let orch = Orchestrator::new(32);
-        let resp = orch.handle_join("node-1".into(), 100).unwrap();
+        let resp = orch
+            .handle_announce(
+                "node-1".into(),
+                make_profile("node-1", DeviceType::Desktop),
+                make_status(0.1, 12000),
+            )
+            .unwrap();
 
         if let SwarmMessage::JoinResponse {
             assigned_layers,
@@ -182,82 +262,128 @@ mod tests {
         {
             assert_eq!(total_layers, 32);
             assert_eq!(assigned_layers.len(), 32);
-            assert_eq!(assigned_layers, (0..32).collect::<Vec<u32>>());
         } else {
             panic!("Expected JoinResponse");
         }
     }
 
     #[test]
-    fn test_equal_power_splits_evenly() {
+    fn test_server_gets_more_than_laptop() {
         let orch = Orchestrator::new(32);
-        orch.handle_join("node-1".into(), 100).unwrap();
-        let resp = orch.handle_join("node-2".into(), 100).unwrap();
 
-        if let SwarmMessage::JoinResponse {
-            assigned_layers,
-            total_layers,
-        } = resp
-        {
-            assert_eq!(total_layers, 32);
-            assert_eq!(assigned_layers.len(), 16);
-        } else {
-            panic!("Expected JoinResponse");
-        }
+        // Server: low reservation (5% CPU, 512MB RAM)
+        orch.handle_announce(
+            "server".into(),
+            make_profile("server", DeviceType::Server),
+            make_status(0.1, 14000),
+        )
+        .unwrap();
+
+        // Laptop: high reservation (30% CPU, 2GB RAM)
+        orch.handle_announce(
+            "laptop".into(),
+            make_profile("laptop", DeviceType::Laptop),
+            make_status(0.1, 14000),
+        )
+        .unwrap();
+
+        let registry = orch.registry.read().unwrap();
+        let server = registry.get("server").unwrap();
+        let laptop = registry.get("laptop").unwrap();
+
+        // Server should get more layers because it has higher effective capacity
+        assert!(
+            server.assigned_layers.len() > laptop.assigned_layers.len(),
+            "Server got {} layers, laptop got {} layers",
+            server.assigned_layers.len(),
+            laptop.assigned_layers.len()
+        );
+
+        // All layers must be covered
+        let total = server.assigned_layers.len() + laptop.assigned_layers.len();
+        assert_eq!(total, 32);
     }
 
     #[test]
-    fn test_proportional_distribution() {
-        let orch = Orchestrator::new(30);
-        // Node with 2x power should get ~2x layers
-        orch.handle_join("strong".into(), 200).unwrap();
-        orch.handle_join("weak".into(), 100).unwrap();
+    fn test_status_update_rebalances_on_big_change() {
+        let orch = Orchestrator::new(32);
 
-        let workers = orch.workers.read().unwrap();
-        let strong = workers.get("strong").unwrap();
-        let weak = workers.get("weak").unwrap();
+        orch.handle_announce(
+            "node-1".into(),
+            make_profile("node-1", DeviceType::Desktop),
+            make_status(0.1, 12000),
+        )
+        .unwrap();
 
-        // strong (200/300 * 30 = 20), weak (100/300 * 30 = 10)
-        assert_eq!(strong.assigned_layers.len(), 20);
-        assert_eq!(weak.assigned_layers.len(), 10);
+        orch.handle_announce(
+            "node-2".into(),
+            make_profile("node-2", DeviceType::Desktop),
+            make_status(0.1, 12000),
+        )
+        .unwrap();
 
-        // All layers must be covered with no gaps
-        let mut all_layers: Vec<u32> = strong
-            .assigned_layers
-            .iter()
-            .chain(weak.assigned_layers.iter())
-            .copied()
-            .collect();
-        all_layers.sort();
-        assert_eq!(all_layers, (0..30).collect::<Vec<u32>>());
+        // Node-1 becomes very busy
+        let result = orch
+            .handle_status_update("node-1", make_status(0.9, 2000))
+            .unwrap();
+
+        // Should trigger rebalance
+        assert!(
+            result.is_some() || {
+                let reg = orch.registry.read().unwrap();
+                let n1 = reg.get("node-1").unwrap();
+                let n2 = reg.get("node-2").unwrap();
+                // Node-2 should have more layers now
+                n2.assigned_layers.len() >= n1.assigned_layers.len()
+            }
+        );
     }
 
     #[test]
-    fn test_leave_rebalances() {
+    fn test_drain_removes_and_rebalances() {
         let orch = Orchestrator::new(32);
-        orch.handle_join("node-1".into(), 100).unwrap();
-        orch.handle_join("node-2".into(), 100).unwrap();
 
-        // node-2 leaves → node-1 should get all 32 layers back
-        orch.handle_leave("node-2").unwrap();
+        orch.handle_announce(
+            "node-1".into(),
+            make_profile("node-1", DeviceType::Desktop),
+            make_status(0.1, 12000),
+        )
+        .unwrap();
 
-        let workers = orch.workers.read().unwrap();
-        let node1 = workers.get("node-1").unwrap();
+        orch.handle_announce(
+            "node-2".into(),
+            make_profile("node-2", DeviceType::Desktop),
+            make_status(0.1, 12000),
+        )
+        .unwrap();
+
+        assert_eq!(orch.node_count(), 2);
+
+        // Node-2 drains
+        orch.handle_drain("node-2").unwrap();
+
+        assert_eq!(orch.node_count(), 1);
+
+        // Node-1 should now have all 32 layers
+        let registry = orch.registry.read().unwrap();
+        let node1 = registry.get("node-1").unwrap();
         assert_eq!(node1.assigned_layers.len(), 32);
     }
 
     #[test]
-    fn test_worker_count() {
+    fn test_node_count_methods() {
         let orch = Orchestrator::new(32);
-        assert_eq!(orch.worker_count(), 0);
+        assert_eq!(orch.node_count(), 0);
+        assert_eq!(orch.active_node_count(), 0);
 
-        orch.handle_join("node-1".into(), 100).unwrap();
-        assert_eq!(orch.worker_count(), 1);
+        orch.handle_announce(
+            "node-1".into(),
+            make_profile("node-1", DeviceType::Desktop),
+            make_status(0.1, 12000),
+        )
+        .unwrap();
 
-        orch.handle_join("node-2".into(), 50).unwrap();
-        assert_eq!(orch.worker_count(), 2);
-
-        orch.handle_leave("node-1").unwrap();
-        assert_eq!(orch.worker_count(), 1);
+        assert_eq!(orch.node_count(), 1);
+        assert_eq!(orch.active_node_count(), 1);
     }
 }

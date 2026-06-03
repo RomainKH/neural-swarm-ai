@@ -1,13 +1,24 @@
+use neural_swarm_ai::compute::{ComputeMonitor, NodeProfile};
 use neural_swarm_ai::Executor;
 
 #[tokio::main]
 async fn main() {
     println!("🤖 Starting NeuralSwarmAI Worker Node...");
 
-    let device_id = "raspberry-pi-5".to_string();
-    let executor = Executor::new(device_id.clone());
+    // Auto-detect hardware profile (CPU, RAM, architecture, device type)
+    let profile = NodeProfile::detect();
+    let executor = Executor::new(profile.hostname.clone());
 
     println!("✅ Executor initialized for device: {}", executor.device_id);
+    println!(
+        "📊 Hardware Profile: {:?} with {} cores, {} MB RAM",
+        profile.device_type, profile.cpu_cores, profile.ram_total_mb
+    );
+
+    // Start the compute monitor in the background to track real-time CPU/RAM usage
+    let (monitor, _status_rx) = ComputeMonitor::new(Default::default());
+    tokio::spawn(monitor.run());
+
     println!("⏳ Waiting for tasks from Orchestrator...");
 
     // In a real scenario, you would:

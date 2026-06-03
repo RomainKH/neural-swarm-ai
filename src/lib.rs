@@ -1,5 +1,7 @@
 pub mod backend;
+pub mod compute;
 pub mod executor;
+pub mod node;
 pub mod orchestrator;
 pub mod protocol;
 
@@ -10,7 +12,11 @@ pub mod llama_backend;
 pub mod transport;
 
 pub use backend::InferenceBackend;
+pub use compute::{
+    DeviceType, EffectiveCapacity, NodeProfile, NodeStatus, ResourceReservation, ThermalState,
+};
 pub use executor::Executor;
+pub use node::{NodeEntry, NodeRegistry, NodeState};
 pub use orchestrator::Orchestrator;
 pub use protocol::SwarmMessage;
 

@@ -1,21 +1,26 @@
+use crate::compute::profile::NodeProfile;
+use crate::compute::status::NodeStatus;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 /// Messages exchanged between nodes in the NeuralSwarmAI cluster.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum SwarmMessage {
-    /// Handshake: Node requests to join the cluster.
-    JoinRequest {
+    // ── Handshake ───────────────────────────────────────────────
+    /// Node announces itself to the master with its hardware profile.
+    NodeAnnounce {
         device_id: String,
-        compute_power: u32,
+        profile: NodeProfile,
+        initial_status: NodeStatus,
     },
-    /// Handshake: Master responds with assigned layers.
+    /// Master responds with assigned layers and cluster info.
     JoinResponse {
         assigned_layers: Vec<u32>,
         total_layers: u32,
     },
 
-    /// Inference: Master sends a task to a node.
+    // ── Inference ───────────────────────────────────────────────
+    /// Master sends a computation task to a node.
     ProcessTask {
         task_id: String,
         /// Serialized KV Cache state.
@@ -24,7 +29,7 @@ pub enum SwarmMessage {
         end_layer: u32,
         tokens: Vec<i32>,
     },
-    /// Inference: Node sends result back to Master.
+    /// Node sends computation result back to Master.
     TaskResult {
         task_id: String,
         /// Serialized KV Cache state after computation.
@@ -33,7 +38,25 @@ pub enum SwarmMessage {
         logits: Vec<f32>,
     },
 
-    /// Health check.
+    // ── Dynamic Compute ────────────────────────────────────────
+    /// Worker reports updated resource availability.
+    /// Only sent when the change exceeds the monitor threshold.
+    StatusUpdate { status: NodeStatus },
+
+    /// Master orders a layer redistribution.
+    RebalanceCommand {
+        /// New layer assignment for the receiving node.
+        new_layers: Vec<u32>,
+    },
+
+    /// Node acknowledges rebalance completion.
+    RebalanceAck { device_id: String },
+
+    // ── Lifecycle ──────────────────────────────────────────────
+    /// Node requests to leave gracefully (finish tasks, then disconnect).
+    DrainRequest { reason: String },
+
+    /// Health check ping/pong.
     Heartbeat,
 }
 
@@ -49,10 +72,16 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_join_request() {
-        roundtrip(&SwarmMessage::JoinRequest {
-            device_id: "raspberry-pi-5".into(),
-            compute_power: 42,
+    fn test_roundtrip_node_announce() {
+        roundtrip(&SwarmMessage::NodeAnnounce {
+            device_id: "macbook-pro".into(),
+            profile: NodeProfile::custom(
+                crate::compute::profile::DeviceType::Laptop,
+                10,
+                16384,
+                "macbook-pro".into(),
+            ),
+            initial_status: NodeStatus::unknown(),
         });
     }
 
@@ -85,18 +114,28 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_heartbeat() {
-        roundtrip(&SwarmMessage::Heartbeat);
+    fn test_roundtrip_status_update() {
+        roundtrip(&SwarmMessage::StatusUpdate {
+            status: NodeStatus::unknown(),
+        });
     }
 
     #[test]
-    fn test_empty_state_roundtrip() {
-        roundtrip(&SwarmMessage::ProcessTask {
-            task_id: "empty".into(),
-            input_state: Bytes::new(),
-            start_layer: 0,
-            end_layer: 0,
-            tokens: vec![],
+    fn test_roundtrip_rebalance_command() {
+        roundtrip(&SwarmMessage::RebalanceCommand {
+            new_layers: vec![10, 11, 12, 13],
         });
+    }
+
+    #[test]
+    fn test_roundtrip_drain_request() {
+        roundtrip(&SwarmMessage::DrainRequest {
+            reason: "Battery low".into(),
+        });
+    }
+
+    #[test]
+    fn test_roundtrip_heartbeat() {
+        roundtrip(&SwarmMessage::Heartbeat);
     }
 }
