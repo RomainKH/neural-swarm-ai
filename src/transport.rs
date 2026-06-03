@@ -26,9 +26,9 @@ pub mod server {
 
         while let Some(Ok(msg)) = receiver.next().await {
             if let Message::Binary(bin) = msg {
-                if let Ok(swarm_msg) = serde_json::from_slice::<SwarmMessage>(&bin) {
+                if let Ok(swarm_msg) = bincode::deserialize::<SwarmMessage>(&bin) {
                     if let Some(response) = handle_msg(swarm_msg, Arc::clone(&state)) {
-                        if let Ok(resp_bin) = serde_json::to_vec(&response) {
+                        if let Ok(resp_bin) = bincode::serialize(&response) {
                             let _ = sender.send(Message::Binary(resp_bin.into())).await;
                         }
                     }
