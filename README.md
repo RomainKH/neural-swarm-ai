@@ -14,6 +14,7 @@ It enables running massive models (e.g., 70B+ parameters) on a network of consum
 - [📦 Installation](#-installation)
 - [🛠️ Development & Local Setup](#️-development--local-setup)
 - [🚀 Quick Start](#-quick-start)
+- [🔌 Custom Backend](#-custom-backend)
 - [🏗️ Architecture](#️-architecture)
 - [🛡️ Security](#️-security)
 - [🤝 Contributing](#-contributing)
@@ -21,7 +22,8 @@ It enables running massive models (e.g., 70B+ parameters) on a network of consum
 ## ✨ Key Features
 
 - **Pipeline Parallelism**: Distribute LLM layers across multiple nodes.
-- **Dynamic Orchestration**: Automatically assign layers based on node compute power.
+- **Dynamic Orchestration**: Automatically assign layers based on node compute power with proportional distribution.
+- **Backend Agnostic**: Bring your own inference engine — llama.cpp, candle, or any custom implementation.
 - **Zero-Copy Optimization**: Uses `Bytes` for efficient memory management during network transfers.
 - **Security-First**: Native support for mTLS and encrypted tensor transfers (AES-256-GCM).
 - **Heterogeneous Support**: Seamlessly mix CPU (ARM/x86) and GPU (Metal/CUDA) nodes.
@@ -30,29 +32,31 @@ It enables running massive models (e.g., 70B+ parameters) on a network of consum
 
 To use NeuralSwarmAI as a dependency in your Rust project, add it to your `Cargo.toml`.
 
-### From Crates.io (If published)
+### Basic (no ML runtime)
+
+The core library compiles in pure Rust with no C/C++ dependencies:
+
 ```toml
 [dependencies]
 neural-swarm-ai = "0.1.0"
 ```
 
-### From a local path (for development)
-If you are developing your project alongside `neural-swarm-ai`:
+### With llama.cpp backend
+
+To use the built-in llama.cpp backend, enable the `llama` feature:
+
 ```toml
 [dependencies]
-neural-swarm-ai = { path = "../neural-swarm-ai" }
+neural-swarm-ai = { version = "0.1.0", features = ["llama"] }
 ```
 
 ### From GitHub
+
 To always use the latest commit from the main branch:
+
 ```toml
 [dependencies]
 neural-swarm-ai = { git = "https://github.com/RomainKH/neural-swarm-ai.git", branch = "main" }
-```
-
-Alternatively, you can install it directly via the command line using Cargo:
-```bash
-cargo add --git https://github.com/RomainKH/neural-swarm-ai.git
 ```
 
 ## 🛠️ Development & Local Setup
@@ -71,11 +75,15 @@ Want to build or contribute to NeuralSwarmAI? Here is how to set up your environ
    git clone https://github.com/RomainKH/neural-swarm-ai.git
    cd neural-swarm-ai
    ```
-2. Build the library:
+2. Build the library (fast, pure Rust):
    ```bash
    cargo build --release
    ```
-3. Run the tests:
+3. Build with llama.cpp backend (requires cmake):
+   ```bash
+   cargo build --release --features llama
+   ```
+4. Run the tests:
    ```bash
    cargo test
    ```
@@ -86,42 +94,87 @@ Here is a minimal example of how to use the library to create a Master orchestra
 
 ### 1. Orchestration (Master)
 
-The Master node manages the cluster and distributes computation tasks.
+The Master node manages the cluster and distributes computation tasks proportionally to each node's compute power.
 
 ```rust
 use neural_swarm_ai::Orchestrator;
 
 fn main() {
     // Initialize an orchestrator for a 32-layer model
-    let mut orchestrator = Orchestrator::new(32); 
-    
-    // Example: A node joins the swarm
-    let response = orchestrator.handle_join("macbook-pro".into(), 100);
-    println!("Node joined with response: {:?}", response);
+    let orchestrator = Orchestrator::new(32);
+
+    // Nodes join the swarm — layers are distributed by compute power
+    let resp = orchestrator.handle_join("gpu-node".into(), 200).unwrap();
+    println!("GPU node assigned: {:?}", resp);
+
+    let resp = orchestrator.handle_join("cpu-node".into(), 50).unwrap();
+    println!("CPU node assigned: {:?}", resp);
+    // gpu-node gets ~26 layers, cpu-node gets ~6 layers
 }
 ```
 
 ### 2. Define a Compute Node (Worker)
 
-The worker processes the layers assigned to it and forwards the results.
+The worker processes the layers assigned to it using any inference backend.
 
 ```rust
-use neural_swarm_ai::{Executor, SwarmMessage};
+use neural_swarm_ai::{Executor, InferenceBackend};
 
 fn main() {
     let executor = Executor::new("node-1".into());
 
-    // Pseudo-code for handling a task
-    // On receiving a ProcessTask message:
-    /*
-    unsafe {
-        if let Some(result) = executor.run_task(&mut llama_ctx, task_message) {
-            // Send TaskResult back to Master or forward to the next node
-        }
-    }
-    */
+    // Use any backend implementing InferenceBackend:
+    // let result = executor.run_task(&mut my_backend, task_message).unwrap();
 }
 ```
+
+### 3. Using the llama.cpp backend
+
+If you need the llama.cpp backend, enable the `llama` feature and wrap your context:
+
+```rust
+use neural_swarm_ai::{Executor, LlamaBackend};
+
+fn main() {
+    let executor = Executor::new("node-1".into());
+
+    // Wrap an existing LlamaContext:
+    // let mut backend = LlamaBackend::new(&mut llama_ctx);
+    // let result = executor.run_task(&mut backend, task)?;
+}
+```
+
+## 🔌 Custom Backend
+
+NeuralSwarmAI is designed to work with **any** inference engine. Implement the `InferenceBackend` trait to plug in your own:
+
+```rust
+use neural_swarm_ai::InferenceBackend;
+use anyhow::Result;
+
+struct MyCustomBackend {
+    // Your model state...
+}
+
+impl InferenceBackend for MyCustomBackend {
+    fn set_state(&mut self, state: &[u8]) -> Result<()> {
+        // Restore KV cache from serialized bytes
+        Ok(())
+    }
+
+    fn get_state(&self) -> Result<Vec<u8>> {
+        // Serialize current KV cache
+        Ok(vec![])
+    }
+
+    fn run_layers(&mut self, start: u32, end: u32, tokens: &[i32]) -> Result<Vec<f32>> {
+        // Run inference on layers [start, end) and return logits
+        Ok(vec![])
+    }
+}
+```
+
+This enables integrations with frameworks like [candle](https://github.com/huggingface/candle), [burn](https://github.com/tracel-ai/burn), or any custom GGUF/ONNX runtime.
 
 ## 🏗️ Architecture
 
@@ -130,6 +183,14 @@ NeuralSwarmAI implements a "Pause-and-Forward" mechanism:
 2. **State** (KV Cache) is serialized and forwarded to the next **Worker**.
 3. **Worker** injects state, computes next $M$ layers, and forwards the new state.
 4. **Final Node** returns the logits for token sampling.
+
+### Feature Flags
+
+| Feature  | Default | Description                            |
+|----------|---------|----------------------------------------|
+| `server` | ✅      | Axum WebSocket server for the Master   |
+| `client` | ✅      | WebSocket client for Worker nodes      |
+| `llama`  | ❌      | llama.cpp inference backend            |
 
 ## 🛡️ Security
 

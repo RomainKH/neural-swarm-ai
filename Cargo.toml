@@ -6,12 +6,11 @@ edition = "2021"
 description = "A lightweight Rust library for distributed LLM inference using Pipeline Parallelism."
 license = "MIT"
 repository = "https://github.com/RomainKH/neural-swarm-ai"
-keywords = ["llm", "ai", "distributed", "p2p", "llama-cpp"]
+keywords = ["llm", "ai", "distributed", "p2p", "inference"]
 categories = ["science", "network-programming"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-llama-cpp-2 = "0.1.146"
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 bytes = { version = "1.6", features = ["serde"] }
@@ -21,7 +20,14 @@ tracing = "0.1"
 anyhow = "1.0"
 bincode = "1.3"
 
+# Optional backends
+llama-cpp-2 = { version = "0.1.146", optional = true }
+
 [features]
 default = ["server", "client"]
 server = ["dep:axum"]
 client = ["dep:tokio-tungstenite"]
+llama = ["dep:llama-cpp-2"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
