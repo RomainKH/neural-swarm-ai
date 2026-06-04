@@ -7,6 +7,17 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum SwarmMessage {
     // ── Handshake ───────────────────────────────────────────────
+    /// Master challenges the connecting node for authentication.
+    AuthChallenge {
+        nonce: [u8; 32],
+        public_key: [u8; 32],
+    },
+    /// Node responds to the challenge.
+    AuthResponse {
+        node_id: String,
+        token_hash: Vec<u8>,
+        public_key: [u8; 32],
+    },
     /// Node announces itself to the master with its hardware profile.
     NodeAnnounce {
         device_id: String,
@@ -17,12 +28,15 @@ pub enum SwarmMessage {
     JoinResponse {
         assigned_layers: Vec<u32>,
         total_layers: u32,
+        /// Cluster-wide encryption key, encrypted with the session key (PFS).
+        encrypted_cluster_key: Vec<u8>,
     },
 
     // ── Inference ───────────────────────────────────────────────
     /// Master sends a computation task to a node.
     ProcessTask {
         task_id: String,
+        sequence_id: u64,
         /// Serialized KV Cache state.
         input_state: Bytes,
         start_layer: u32,
@@ -32,6 +46,7 @@ pub enum SwarmMessage {
     /// Node sends computation result back to Master.
     TaskResult {
         task_id: String,
+        sequence_id: u64,
         /// Serialized KV Cache state after computation.
         output_state: Bytes,
         /// Output probabilities for the next token.
@@ -90,6 +105,24 @@ mod tests {
         roundtrip(&SwarmMessage::JoinResponse {
             assigned_layers: vec![0, 1, 2, 3, 4, 5],
             total_layers: 32,
+            encrypted_cluster_key: vec![1, 2, 3],
+        });
+    }
+
+    #[test]
+    fn test_roundtrip_auth_challenge() {
+        roundtrip(&SwarmMessage::AuthChallenge {
+            nonce: [1u8; 32],
+            public_key: [2u8; 32],
+        });
+    }
+
+    #[test]
+    fn test_roundtrip_auth_response() {
+        roundtrip(&SwarmMessage::AuthResponse {
+            node_id: "node-1".into(),
+            token_hash: vec![1, 2, 3],
+            public_key: [4u8; 32],
         });
     }
 
@@ -97,6 +130,7 @@ mod tests {
     fn test_roundtrip_process_task() {
         roundtrip(&SwarmMessage::ProcessTask {
             task_id: "task-001".into(),
+            sequence_id: 42,
             input_state: Bytes::from(vec![0xDE, 0xAD, 0xBE, 0xEF]),
             start_layer: 0,
             end_layer: 16,
@@ -108,6 +142,7 @@ mod tests {
     fn test_roundtrip_task_result() {
         roundtrip(&SwarmMessage::TaskResult {
             task_id: "task-001".into(),
+            sequence_id: 42,
             output_state: Bytes::from(vec![0xCA, 0xFE]),
             logits: vec![0.1, 0.5, 0.3, 0.1],
         });

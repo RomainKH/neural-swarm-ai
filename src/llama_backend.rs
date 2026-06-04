@@ -21,13 +21,13 @@ use llama_cpp_2::context::LlamaContext;
 /// let mut backend = LlamaBackend::new(&mut llama_ctx);
 /// let result = executor.run_task(&mut backend, task)?;
 /// ```
-pub struct LlamaBackend<'a> {
-    ctx: &'a mut LlamaContext<'a>,
+pub struct LlamaBackend<'a, 'model> {
+    ctx: &'a mut LlamaContext<'model>,
 }
 
-impl<'a> LlamaBackend<'a> {
+impl<'a, 'model> LlamaBackend<'a, 'model> {
     /// Wraps an existing `LlamaContext` into a NeuralSwarmAI-compatible backend.
-    pub fn new(ctx: &'a mut LlamaContext<'a>) -> Self {
+    pub fn new(ctx: &'a mut LlamaContext<'model>) -> Self {
         Self { ctx }
     }
 }
@@ -35,10 +35,10 @@ impl<'a> LlamaBackend<'a> {
 // SAFETY: We guarantee that methods on `InferenceBackend` are not called concurrently
 // on the same instance (it requires `&mut self` for mutable operations) and it is safe
 // to move the backend across thread boundaries in the tokio executor.
-unsafe impl Send for LlamaBackend<'_> {}
-unsafe impl Sync for LlamaBackend<'_> {}
+unsafe impl Send for LlamaBackend<'_, '_> {}
+unsafe impl Sync for LlamaBackend<'_, '_> {}
 
-impl InferenceBackend for LlamaBackend<'_> {
+impl InferenceBackend for LlamaBackend<'_, '_> {
     fn set_state(&mut self, state: &[u8]) -> Result<()> {
         // SAFETY: `set_state_data` is unsafe in llama-cpp-2 because it
         // performs raw pointer operations on the KV cache. We trust the

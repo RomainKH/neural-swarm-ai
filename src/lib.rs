@@ -1,8 +1,10 @@
 pub mod backend;
 pub mod compute;
+pub mod crypto;
 pub mod executor;
 pub mod node;
 pub mod orchestrator;
+pub mod pipeline;
 pub mod protocol;
 
 #[cfg(feature = "llama")]

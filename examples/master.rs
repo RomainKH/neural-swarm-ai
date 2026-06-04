@@ -9,13 +9,18 @@ async fn main() {
     println!("🧠 Starting NeuralSwarmAI Master Node...");
 
     // Initialize an orchestrator for a 32-layer model, wrapped in Arc for axum
-    let orchestrator = Arc::new(Orchestrator::new(32));
+    let shared_secret = "my_super_secret_token".to_string();
+    let orchestrator = Arc::new(Orchestrator::new(32, shared_secret.clone()));
+    let state = neural_swarm_ai::transport::server::ServerState {
+        orchestrator,
+        shared_secret,
+    };
     println!("✅ Orchestrator initialized for a 32-layer model.");
 
     // Setup the axum router
     let app = Router::new()
         .route("/swarm", get(swarm_handler))
-        .with_state(orchestrator);
+        .with_state(state);
 
     let addr = "127.0.0.1:3000";
     let listener = TcpListener::bind(addr).await.unwrap();
