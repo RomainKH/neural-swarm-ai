@@ -35,7 +35,7 @@ pub struct SequenceState {
 /// The outcome of processing a task result in the pipeline.
 pub enum PipelineResult {
     /// The pipeline continues; send the provided task to the specified node.
-    NextStage(PeerId, SwarmMessage),
+    NextStage(PeerId, Box<SwarmMessage>),
     /// The pipeline has finished; these are the final logits.
     Finished(Vec<f32>),
 }
@@ -156,7 +156,7 @@ impl InferencePipeline {
                         tokens: state.tokens.clone(),
                         route: Some(next_route),
                     };
-                    return Some(PipelineResult::NextStage(next_peer_id, next_task));
+                    return Some(PipelineResult::NextStage(next_peer_id, Box::new(next_task)));
                 } else {
                     // Pipeline finished for this task
                     let final_logits = logits.clone();

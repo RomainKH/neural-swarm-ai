@@ -56,16 +56,21 @@ async fn test_v0_3_topology_aware_rebalance() -> Result<()> {
     orchestrator.handle_announce(id2.to_string(), p2, s2)?;
 
     let registry = orchestrator.registry.read().unwrap();
-    let fast = registry.get(&id1.to_string()).unwrap();
-    let slow = registry.get(&id2.to_string()).unwrap();
+    let n1 = registry.get(&id1.to_string()).unwrap();
+    let n2 = registry.get(&id2.to_string()).unwrap();
 
     // 2. Verify fast node got more layers due to latency penalty on the slow node
     println!(
-        "Fast node layers: {}, Slow node layers: {}",
-        fast.assigned_layers.len(),
-        slow.assigned_layers.len()
+        "Node 1 ({:?}) layers: {}, Node 2 ({:?}) layers: {}",
+        id1,
+        n1.assigned_layers.len(),
+        id2,
+        n2.assigned_layers.len()
     );
-    assert!(fast.assigned_layers.len() > slow.assigned_layers.len());
+
+    // One of them should have 10ms and the other 500ms.
+    // The one with 10ms (id1) should have more layers than the one with 500ms (id2).
+    assert!(n1.assigned_layers.len() > n2.assigned_layers.len());
 
     Ok(())
 }
@@ -82,7 +87,7 @@ async fn test_v0_3_heterogeneous_mock() -> Result<()> {
 
     // Since task.input_state is NOT encrypted in this manual task creation,
     // we need to encrypt it first to simulate a real orchestrator output
-    let compressed = neural_swarm_ai::crypto::compress(&vec![1, 2, 3])?;
+    let compressed = neural_swarm_ai::crypto::compress(&[1, 2, 3])?;
     let encrypted =
         neural_swarm_ai::crypto::encrypt_with_aad(&compressed, &cluster_key, b"task_123").unwrap();
 
