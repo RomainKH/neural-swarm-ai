@@ -191,7 +191,10 @@ pub mod client {
         let connection_latency = start_connect.elapsed().as_millis() as u32;
         status.latency_ms = Some(connection_latency);
 
-        println!("🔗 Connected to swarm at {} (latency: {}ms)", url, connection_latency);
+        println!(
+            "🔗 Connected to swarm at {} (latency: {}ms)",
+            url, connection_latency
+        );
 
         let (mut write, mut read) = ws_stream.split();
 

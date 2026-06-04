@@ -5,7 +5,7 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::llama as model;
 
 /// Inference backend using the HuggingFace Candle framework (100% Rust).
-/// 
+///
 /// Support for Heterogeneous Compute: uses GPU (Metal/CUDA/WGPU) when available,
 /// with automatic fallback or simultaneous CPU execution for massive models.
 pub struct CandleBackend {
@@ -35,7 +35,11 @@ impl CandleBackend {
     }
 
     /// Loads a Llama model from a set of safetensors.
-    pub fn load_model(&mut self, config: &model::Config, filenames: &[std::path::PathBuf]) -> Result<()> {
+    pub fn load_model(
+        &mut self,
+        config: &model::Config,
+        filenames: &[std::path::PathBuf],
+    ) -> Result<()> {
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(filenames, self.dtype, &self.primary_device)?
         };
@@ -48,7 +52,7 @@ impl InferenceBackend for CandleBackend {
     fn set_state(&mut self, state: &[u8]) -> Result<()> {
         // In v0.3, we implement efficient KV Cache serialization.
         if !state.is_empty() {
-             // TODO: Deserialize state into self.cache
+            // TODO: Deserialize state into self.cache
         }
         Ok(())
     }
@@ -69,11 +73,11 @@ impl InferenceBackend for CandleBackend {
 
         if let Some(ref _model) = self.model {
             let tokens_u32: Vec<u32> = tokens.iter().map(|&t| t as u32).collect();
-            
+
             // Heterogeneous Compute: We can decide where to run specific layers
             // For now, run everything on the primary device (GPU if available)
             let _input = Tensor::new(tokens_u32.as_slice(), &self.primary_device)?;
-            
+
             // TODO: Partial forward pass logic
         }
 
