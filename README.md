@@ -30,7 +30,7 @@ It enables running massive models (e.g., 70B+ parameters) on a network of consum
   - **Perfect Forward Secrecy**: ECDH (X25519) key exchange for every session.
   - **Authenticated Encryption**: AES-256-GCM with AAD (Task-binding) to prevent replay attacks.
 - **Compression (v0.2)**: High-speed `zstd` compression of KV Cache tensors to reduce bandwidth usage by up to 60%.
-- **Heterogeneous Support**: Seamlessly mix CPU (ARM/x86) and GPU (Metal/CUDA/WGPU) nodes.
+- **Heterogeneous Support**: Seamlessly mix CPU (ARM/x86) and GPU (Apple Metal, Nvidia CUDA) nodes.
 
 ## ⚡ Performance & Specs
 

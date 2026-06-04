@@ -174,20 +174,24 @@ pub mod client {
     use futures::{SinkExt, StreamExt};
     use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-    /// Connects to a NeuralSwarmAI cluster. Returns the decrypted ClusterKey.
+    /// Connects to a NeuralSwarmAI cluster. Returns the decrypted ClusterKey and the WebSocket stream.
     pub async fn connect_to_cluster(
         url: &str,
         shared_secret: &str,
         profile: NodeProfile,
-        status: NodeStatus,
+        mut status: NodeStatus,
     ) -> Result<(
         [u8; 32],
         tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
     )> {
+        let start_connect = std::time::Instant::now();
         let (ws_stream, _) = connect_async(url).await?;
-        println!("🔗 Connected to swarm at {}", url);
+        let connection_latency = start_connect.elapsed().as_millis() as u32;
+        status.latency_ms = Some(connection_latency);
+
+        println!("🔗 Connected to swarm at {} (latency: {}ms)", url, connection_latency);
 
         let (mut write, mut read) = ws_stream.split();
 
