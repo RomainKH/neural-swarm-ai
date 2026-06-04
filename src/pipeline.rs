@@ -10,7 +10,16 @@ pub struct SequenceState {
     pub current_node_index: usize,
 }
 
+/// The outcome of processing a task result in the pipeline.
+pub enum PipelineResult {
+    /// The pipeline continues; send the provided task to the specified node.
+    NextStage(String, SwarmMessage),
+    /// The pipeline has finished; these are the final logits.
+    Finished(Vec<f32>),
+}
+
 /// Manages the routing of tokens through the active nodes in the swarm.
+#[derive(Default)]
 pub struct InferencePipeline {
     /// Maps a task_id to its ongoing sequence state
     active_sequences: HashMap<String, SequenceState>,
@@ -20,10 +29,7 @@ pub struct InferencePipeline {
 
 impl InferencePipeline {
     pub fn new() -> Self {
-        Self {
-            active_sequences: HashMap::new(),
-            pipeline_stages: Vec::new(),
-        }
+        Self::default()
     }
 
     /// Updates the pipeline stages based on the latest sorted registry nodes.
@@ -78,18 +84,18 @@ impl InferencePipeline {
         None
     }
 
-    /// Handles a result from a node. If there is a next stage, returns the ProcessTask
-    /// for the next node. Otherwise returns None (pipeline finished).
+    /// Handles a result from a node. If there is a next stage, returns NextStage.
+    /// Otherwise returns Finished with the final logits.
     pub fn handle_task_result(
         &mut self,
         result: &SwarmMessage,
         next_node_layers: (u32, u32),
-    ) -> Option<(String, SwarmMessage)> {
+    ) -> Option<PipelineResult> {
         if let SwarmMessage::TaskResult {
             task_id,
             sequence_id,
             output_state,
-            logits: _,
+            logits,
         } = result
         {
             if let Some(state) = self.active_sequences.get_mut(task_id) {
@@ -110,10 +116,12 @@ impl InferencePipeline {
                         end_layer: next_node_layers.1,
                         tokens: state.tokens.clone(),
                     };
-                    return Some((next_node_id, next_task));
+                    return Some(PipelineResult::NextStage(next_node_id, next_task));
                 } else {
                     // Pipeline finished for this task
+                    let final_logits = logits.clone();
                     self.active_sequences.remove(task_id);
+                    return Some(PipelineResult::Finished(final_logits));
                 }
             }
         }

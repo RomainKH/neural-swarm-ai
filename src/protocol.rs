@@ -8,9 +8,16 @@ use serde::{Deserialize, Serialize};
 pub enum SwarmMessage {
     // ── Handshake ───────────────────────────────────────────────
     /// Master challenges the connecting node for authentication.
-    AuthChallenge { nonce: [u8; 32] },
+    AuthChallenge {
+        nonce: [u8; 32],
+        public_key: [u8; 32],
+    },
     /// Node responds to the challenge.
-    AuthResponse { token_hash: Vec<u8> },
+    AuthResponse {
+        node_id: String,
+        token_hash: Vec<u8>,
+        public_key: [u8; 32],
+    },
     /// Node announces itself to the master with its hardware profile.
     NodeAnnounce {
         device_id: String,
@@ -21,6 +28,8 @@ pub enum SwarmMessage {
     JoinResponse {
         assigned_layers: Vec<u32>,
         total_layers: u32,
+        /// Cluster-wide encryption key, encrypted with the session key (PFS).
+        encrypted_cluster_key: Vec<u8>,
     },
 
     // ── Inference ───────────────────────────────────────────────
@@ -96,6 +105,24 @@ mod tests {
         roundtrip(&SwarmMessage::JoinResponse {
             assigned_layers: vec![0, 1, 2, 3, 4, 5],
             total_layers: 32,
+            encrypted_cluster_key: vec![1, 2, 3],
+        });
+    }
+
+    #[test]
+    fn test_roundtrip_auth_challenge() {
+        roundtrip(&SwarmMessage::AuthChallenge {
+            nonce: [1u8; 32],
+            public_key: [2u8; 32],
+        });
+    }
+
+    #[test]
+    fn test_roundtrip_auth_response() {
+        roundtrip(&SwarmMessage::AuthResponse {
+            node_id: "node-1".into(),
+            token_hash: vec![1, 2, 3],
+            public_key: [4u8; 32],
         });
     }
 

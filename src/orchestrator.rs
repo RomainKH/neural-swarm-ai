@@ -25,28 +25,37 @@ use std::sync::{Arc, RwLock};
 /// use neural_swarm_ai::Orchestrator;
 /// use neural_swarm_ai::compute::{NodeProfile, DeviceType, NodeStatus};
 ///
-/// let orchestrator = Orchestrator::new(32);
+/// let orchestrator = Orchestrator::new(32, "my-secret".into());
 ///
 /// // A node joins with auto-detected profile
 /// let profile = NodeProfile::custom(DeviceType::Desktop, 8, 16384, "my-pc".into());
 /// let status = NodeStatus::unknown();
 /// let resp = orchestrator.handle_announce("my-pc".into(), profile, status).unwrap();
 /// ```
-use crate::pipeline::InferencePipeline;
+use crate::pipeline::{InferencePipeline, PipelineResult};
+use rand::Rng;
 
 pub struct Orchestrator {
     pub registry: Arc<RwLock<NodeRegistry>>,
     pub pipeline: Arc<RwLock<InferencePipeline>>,
     pub total_model_layers: u32,
+    pub shared_secret: String,
+    /// Random key generated on startup for cluster-wide payload encryption.
+    pub cluster_key: [u8; 32],
 }
 
 impl Orchestrator {
     /// Creates a new orchestrator for a model with a given number of layers.
-    pub fn new(total_layers: u32) -> Self {
+    pub fn new(total_layers: u32, shared_secret: String) -> Self {
+        let mut cluster_key = [0u8; 32];
+        rand::thread_rng().fill(&mut cluster_key);
+
         Self {
             registry: Arc::new(RwLock::new(NodeRegistry::new())),
             pipeline: Arc::new(RwLock::new(InferencePipeline::new())),
             total_model_layers: total_layers,
+            shared_secret,
+            cluster_key,
         }
     }
 
@@ -80,6 +89,7 @@ impl Orchestrator {
         Ok(SwarmMessage::JoinResponse {
             assigned_layers: entry.assigned_layers.clone(),
             total_layers: self.total_model_layers,
+            encrypted_cluster_key: vec![],
         })
     }
 
@@ -184,9 +194,12 @@ impl Orchestrator {
         total_layers: u32,
         pipeline: &Arc<RwLock<InferencePipeline>>,
     ) {
+        // Try to acquire the pipeline lock gracefully
+        let mut pipeline_lock = pipeline.write().expect("Failed to acquire pipeline lock");
+
         let sorted = registry.sorted_by_capacity();
         if sorted.is_empty() {
-            pipeline.write().unwrap().update_stages(vec![]);
+            pipeline_lock.update_stages(vec![]);
             return;
         }
 
@@ -196,7 +209,7 @@ impl Orchestrator {
             let per_node = total_layers / sorted.len() as u32;
             let mut current = 0u32;
             let ids: Vec<String> = sorted.iter().map(|n| n.id.clone()).collect();
-            pipeline.write().unwrap().update_stages(ids.clone());
+            pipeline_lock.update_stages(ids.clone());
             for (i, id) in ids.iter().enumerate() {
                 let count = if i == ids.len() - 1 {
                     total_layers.saturating_sub(current)
@@ -220,7 +233,7 @@ impl Orchestrator {
             .iter()
             .map(|(id, _)| id.clone())
             .collect();
-        pipeline.write().unwrap().update_stages(stage_ids);
+        pipeline_lock.update_stages(stage_ids);
 
         for (i, (id, composite)) in ids_and_composites.iter().enumerate() {
             let is_last = i == ids_and_composites.len() - 1;
@@ -247,8 +260,14 @@ impl Orchestrator {
         tokens: Vec<i32>,
         initial_state: bytes::Bytes,
     ) -> Result<Option<(String, SwarmMessage)>> {
-        let registry = self.registry.read().unwrap();
-        let mut pipeline = self.pipeline.write().unwrap();
+        let registry = self
+            .registry
+            .read()
+            .map_err(|e| anyhow::anyhow!("Failed to read registry: {}", e))?;
+        let mut pipeline = self
+            .pipeline
+            .write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire pipeline lock: {}", e))?;
 
         let sorted = registry.sorted_by_capacity();
         if sorted.is_empty() {
@@ -258,11 +277,20 @@ impl Orchestrator {
         let start_layer = *first_node.assigned_layers.first().unwrap_or(&0);
         let end_layer = *first_node.assigned_layers.last().unwrap_or(&0) + 1;
 
+        // Compress and Encrypt initial state
+        let compressed = crate::crypto::compress(&initial_state)?;
+        let encrypted = crate::crypto::encrypt_with_aad(
+            &compressed,
+            &self.cluster_key,
+            task_id.as_bytes(),
+        )
+        .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
+
         Ok(pipeline.start_sequence(
             sequence_id,
             task_id,
             tokens,
-            initial_state,
+            bytes::Bytes::from(encrypted),
             (start_layer, end_layer),
         ))
     }
@@ -271,9 +299,15 @@ impl Orchestrator {
     pub fn handle_task_result(
         &self,
         result: &SwarmMessage,
-    ) -> Result<Option<(String, SwarmMessage)>> {
-        let registry = self.registry.read().unwrap();
-        let mut pipeline = self.pipeline.write().unwrap();
+    ) -> Result<Option<PipelineResult>> {
+        let registry = self
+            .registry
+            .read()
+            .map_err(|e| anyhow::anyhow!("Failed to read registry: {}", e))?;
+        let mut pipeline = self
+            .pipeline
+            .write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire pipeline lock: {}", e))?;
 
         if let SwarmMessage::TaskResult { task_id, .. } = result {
             if let Some(next_id) = pipeline.get_next_node_id(task_id) {
@@ -283,6 +317,9 @@ impl Orchestrator {
 
                     return Ok(pipeline.handle_task_result(result, (start_layer, end_layer)));
                 }
+            } else {
+                // Last stage
+                return Ok(pipeline.handle_task_result(result, (0, 0)));
             }
         }
 
@@ -312,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_single_node_gets_all_layers() {
-        let orch = Orchestrator::new(32);
+        let orch = Orchestrator::new(32, "secret".into());
         let resp = orch
             .handle_announce(
                 "node-1".into(),
@@ -324,6 +361,7 @@ mod tests {
         if let SwarmMessage::JoinResponse {
             assigned_layers,
             total_layers,
+            ..
         } = resp
         {
             assert_eq!(total_layers, 32);
@@ -335,7 +373,7 @@ mod tests {
 
     #[test]
     fn test_server_gets_more_than_laptop() {
-        let orch = Orchestrator::new(32);
+        let orch = Orchestrator::new(32, "secret".into());
 
         // Server: low reservation (5% CPU, 512MB RAM)
         orch.handle_announce(
@@ -372,7 +410,7 @@ mod tests {
 
     #[test]
     fn test_status_update_rebalances_on_big_change() {
-        let orch = Orchestrator::new(32);
+        let orch = Orchestrator::new(32, "secret".into());
 
         orch.handle_announce(
             "node-1".into(),
@@ -407,7 +445,7 @@ mod tests {
 
     #[test]
     fn test_drain_removes_and_rebalances() {
-        let orch = Orchestrator::new(32);
+        let orch = Orchestrator::new(32, "secret".into());
 
         orch.handle_announce(
             "node-1".into(),
@@ -438,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_node_count_methods() {
-        let orch = Orchestrator::new(32);
+        let orch = Orchestrator::new(32, "secret".into());
         assert_eq!(orch.node_count(), 0);
         assert_eq!(orch.active_node_count(), 0);
 

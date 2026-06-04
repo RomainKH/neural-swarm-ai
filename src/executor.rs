@@ -2,6 +2,7 @@ use crate::backend::InferenceBackend;
 use crate::protocol::SwarmMessage;
 use anyhow::Result;
 use bytes::Bytes;
+use tokio::sync::mpsc;
 
 /// Executes computation tasks on the local model using any [`InferenceBackend`].
 ///
@@ -14,29 +15,45 @@ use bytes::Bytes;
 /// ```rust,ignore
 /// use neural_swarm_ai::Executor;
 ///
-/// let executor = Executor::new("node-1".into());
+/// let executor = Executor::new("node-1".into(), [0u8; 32]);
 ///
-/// // With any backend implementing InferenceBackend:
-/// let result = executor.run_task(&mut my_backend, task)?;
+/// // Start the executor loop with a backend and channels
+/// // executor.run_loop(backend, task_rx, result_tx).await;
 /// ```
 pub struct Executor {
     pub device_id: String,
+    pub cluster_key: [u8; 32],
 }
 
 impl Executor {
     /// Creates a new executor for the current device.
-    pub fn new(id: String) -> Self {
-        Self { device_id: id }
+    pub fn new(id: String, key: [u8; 32]) -> Self {
+        Self {
+            device_id: id,
+            cluster_key: key,
+        }
+    }
+
+    /// Starts the executor loop in a separate task.
+    ///
+    /// This allows the node to receive the next task from the network
+    /// (e.g., KV Cache for layer N+1) while the GPU is still busy
+    /// computing the current task (layer N).
+    pub async fn run_loop(
+        &self,
+        mut backend: Box<dyn InferenceBackend>,
+        mut task_rx: mpsc::Receiver<SwarmMessage>,
+        result_tx: mpsc::Sender<SwarmMessage>,
+    ) -> Result<()> {
+        while let Some(task) = task_rx.recv().await {
+            if let Some(result) = self.run_task(backend.as_mut(), task)? {
+                result_tx.send(result).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Processes a computation task using the provided inference backend.
-    ///
-    /// This is a **safe** function — all unsafe operations are encapsulated
-    /// within the backend implementation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the backend fails to set/get state or run inference.
     pub fn run_task(
         &self,
         backend: &mut dyn InferenceBackend,
@@ -51,18 +68,37 @@ impl Executor {
             tokens,
         } = task
         {
-            // 1. Inject received state (KV Cache) from previous node
-            backend.set_state(&input_state)?;
+            // 1. Decrypt and Decompress received state
+            // Use task_id as AAD to prevent replay/cross-task attacks
+            let decrypted = crate::crypto::decrypt_with_aad(
+                &input_state,
+                &self.cluster_key,
+                task_id.as_bytes(),
+            )
+            .map_err(|e| anyhow::anyhow!("Decryption failed: {}", e))?;
+            let decompressed = crate::crypto::decompress(&decrypted)?;
 
-            // 2. Run inference on assigned layers
+            // 2. Inject state into backend
+            backend.set_state(&decompressed)?;
+
+            // 3. Run inference on assigned layers
             let logits = backend.run_layers(start_layer, end_layer, &tokens)?;
 
-            // 3. Extract updated state for forwarding to next node
-            let output_state = backend.get_state()?;
+            // 4. Extract updated state
+            let output_raw = backend.get_state()?;
+
+            // 5. Compress and Encrypt for forwarding
+            let compressed = crate::crypto::compress(&output_raw)?;
+            let encrypted = crate::crypto::encrypt_with_aad(
+                &compressed,
+                &self.cluster_key,
+                task_id.as_bytes(),
+            )
+            .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
 
             return Ok(Some(SwarmMessage::TaskResult {
                 task_id,
-                output_state: Bytes::from(output_state),
+                output_state: Bytes::from(encrypted),
                 logits,
                 sequence_id,
             }));
