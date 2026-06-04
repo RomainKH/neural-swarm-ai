@@ -1421,7 +1421,7 @@ dependencies = [
 
 [[package]]
 name = "neural-swarm-ai"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "aead",
  "aes-gcm",
