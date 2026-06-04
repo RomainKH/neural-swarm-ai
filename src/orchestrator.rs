@@ -279,12 +279,9 @@ impl Orchestrator {
 
         // Compress and Encrypt initial state
         let compressed = crate::crypto::compress(&initial_state)?;
-        let encrypted = crate::crypto::encrypt_with_aad(
-            &compressed,
-            &self.cluster_key,
-            task_id.as_bytes(),
-        )
-        .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
+        let encrypted =
+            crate::crypto::encrypt_with_aad(&compressed, &self.cluster_key, task_id.as_bytes())
+                .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
 
         Ok(pipeline.start_sequence(
             sequence_id,
@@ -296,10 +293,7 @@ impl Orchestrator {
     }
 
     /// Handles a TaskResult. If the pipeline continues, returns the ProcessTask for the next node.
-    pub fn handle_task_result(
-        &self,
-        result: &SwarmMessage,
-    ) -> Result<Option<PipelineResult>> {
+    pub fn handle_task_result(&self, result: &SwarmMessage) -> Result<Option<PipelineResult>> {
         let registry = self
             .registry
             .read()

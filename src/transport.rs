@@ -35,12 +35,12 @@ pub mod server {
         // 1. Authentication & ECDH Phase
         let nonce = generate_nonce();
         let (my_secret, my_public) = crate::crypto::generate_ecdh_keys();
-        
-        let challenge = SwarmMessage::AuthChallenge { 
+
+        let challenge = SwarmMessage::AuthChallenge {
             nonce,
             public_key: my_public,
         };
-        
+
         if let Ok(bin) = bincode::serialize(&challenge) {
             if sender.send(Message::Binary(bin.into())).await.is_err() {
                 return;
@@ -62,7 +62,11 @@ pub mod server {
                     authenticated = true;
                     node_id = Some(id);
                     // Derive session key for PFS
-                    session_key = Some(crate::crypto::derive_session_key(&my_secret, &their_public, &nonce));
+                    session_key = Some(crate::crypto::derive_session_key(
+                        &my_secret,
+                        &their_public,
+                        &nonce,
+                    ));
                 }
             }
         }
@@ -71,7 +75,7 @@ pub mod server {
             println!("🔒 [Server] Authentication failed. Dropping connection.");
             return;
         }
-        
+
         let session_key = session_key.unwrap();
 
         // 2. Main Event Loop
@@ -93,13 +97,24 @@ pub mod server {
                                 "📡 [Server] Node {} connected and authenticated!",
                                 device_id
                             );
-                            
+
                             // Get join response from orchestrator
-                            let mut resp = state.orchestrator.handle_announce(device_id, profile, initial_status).ok();
-                            
+                            let mut resp = state
+                                .orchestrator
+                                .handle_announce(device_id, profile, initial_status)
+                                .ok();
+
                             // Encrypt the cluster key for this node using the session key
-                            if let Some(SwarmMessage::JoinResponse { ref mut encrypted_cluster_key, .. }) = resp {
-                                if let Ok(enc) = crate::crypto::encrypt_with_aad(&state.orchestrator.cluster_key, &session_key, b"cluster-key-handshake") {
+                            if let Some(SwarmMessage::JoinResponse {
+                                ref mut encrypted_cluster_key,
+                                ..
+                            }) = resp
+                            {
+                                if let Ok(enc) = crate::crypto::encrypt_with_aad(
+                                    &state.orchestrator.cluster_key,
+                                    &session_key,
+                                    b"cluster-key-handshake",
+                                ) {
                                     *encrypted_cluster_key = enc;
                                 }
                             }
@@ -175,12 +190,15 @@ pub mod client {
 
         // 1. Wait for AuthChallenge & ECDH
         if let Some(Ok(Message::Binary(bin))) = read.next().await {
-            if let Ok(SwarmMessage::AuthChallenge { nonce, public_key: master_public }) =
-                bincode::deserialize::<SwarmMessage>(&bin)
+            if let Ok(SwarmMessage::AuthChallenge {
+                nonce,
+                public_key: master_public,
+            }) = bincode::deserialize::<SwarmMessage>(&bin)
             {
                 // Generate our keys
                 let (my_secret, my_public) = crate::crypto::generate_ecdh_keys();
-                let session_key = crate::crypto::derive_session_key(&my_secret, &master_public, &nonce);
+                let session_key =
+                    crate::crypto::derive_session_key(&my_secret, &master_public, &nonce);
 
                 // Respond with HMAC + our Public Key
                 let token_hash = sign_hmac(&nonce, shared_secret);
@@ -210,8 +228,12 @@ pub mod client {
                     }) = bincode::deserialize::<SwarmMessage>(&bin)
                     {
                         // Decrypt cluster key
-                        let dec = crate::crypto::decrypt_with_aad(&encrypted_cluster_key, &session_key, b"cluster-key-handshake")
-                            .map_err(|e| anyhow::anyhow!("Failed to decrypt cluster key: {}", e))?;
+                        let dec = crate::crypto::decrypt_with_aad(
+                            &encrypted_cluster_key,
+                            &session_key,
+                            b"cluster-key-handshake",
+                        )
+                        .map_err(|e| anyhow::anyhow!("Failed to decrypt cluster key: {}", e))?;
                         let mut key = [0u8; 32];
                         key.copy_from_slice(&dec);
                         cluster_key = Some(key);

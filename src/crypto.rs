@@ -162,7 +162,7 @@ mod tests {
         let aad = b"task-123";
 
         let encrypted = encrypt_with_aad(data, &key, aad).unwrap();
-        
+
         // Decrypt with correct AAD
         let decrypted = decrypt_with_aad(&encrypted, &key, aad).unwrap();
         assert_eq!(data, decrypted.as_slice());

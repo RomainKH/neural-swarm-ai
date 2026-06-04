@@ -89,12 +89,9 @@ impl Executor {
 
             // 5. Compress and Encrypt for forwarding
             let compressed = crate::crypto::compress(&output_raw)?;
-            let encrypted = crate::crypto::encrypt_with_aad(
-                &compressed,
-                &self.cluster_key,
-                task_id.as_bytes(),
-            )
-            .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
+            let encrypted =
+                crate::crypto::encrypt_with_aad(&compressed, &self.cluster_key, task_id.as_bytes())
+                    .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
 
             return Ok(Some(SwarmMessage::TaskResult {
                 task_id,

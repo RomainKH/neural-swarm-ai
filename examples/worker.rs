@@ -28,10 +28,12 @@ async fn main() {
             println!("✅ Joined swarm! Cluster key obtained.");
             // In a real app, initialize Executor here
             // let executor = Executor::new(hostname, cluster_key);
-            
+
             // For the example, we just keep the connection alive
             println!("⏳ Waiting for tasks (press Ctrl+C to exit)...");
-            loop { tokio::time::sleep(tokio::time::Duration::from_secs(60)).await; }
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            }
         }
         Err(e) => eprintln!("❌ Failed to connect: {}", e),
     }
