@@ -1,5 +1,6 @@
 use anyhow::Result;
 use bytes::Bytes;
+use libp2p::PeerId;
 use neural_swarm_ai::compute::{NodeProfile, NodeStatus};
 use neural_swarm_ai::pipeline::PipelineResult;
 use neural_swarm_ai::{Executor, InferenceBackend, Orchestrator, SwarmMessage};
@@ -27,7 +28,10 @@ async fn test_v0_2_full_pipeline_flow() -> Result<()> {
     let secret = "test_secret".to_string();
     let orchestrator = Orchestrator::new(32, secret.clone());
 
-    // 1. Register two nodes
+    // 1. Register two nodes with valid PeerIds
+    let id1 = PeerId::random();
+    let id2 = PeerId::random();
+
     let p1 = NodeProfile::custom(
         neural_swarm_ai::compute::profile::DeviceType::Desktop,
         8,
@@ -41,8 +45,8 @@ async fn test_v0_2_full_pipeline_flow() -> Result<()> {
         "node2".into(),
     );
 
-    orchestrator.handle_announce("node1".into(), p1, NodeStatus::unknown())?;
-    orchestrator.handle_announce("node2".into(), p2, NodeStatus::unknown())?;
+    orchestrator.handle_announce(id1.to_string(), p1, NodeStatus::unknown())?;
+    orchestrator.handle_announce(id2.to_string(), p2, NodeStatus::unknown())?;
 
     // 2. Start a sequence
     let initial_data = vec![1, 2, 3, 4];
@@ -55,11 +59,11 @@ async fn test_v0_2_full_pipeline_flow() -> Result<()> {
         )?
         .unwrap();
 
-    assert_eq!(node1_id, "node1");
+    assert_eq!(node1_id, id1);
 
     // 3. Node 1 processes task
     let mut backend1 = MockBackend { state: vec![] };
-    let executor1 = Executor::new("node1".into(), orchestrator.cluster_key);
+    let executor1 = Executor::new(id1.to_string(), orchestrator.cluster_key);
 
     let result1 = executor1.run_task(&mut backend1, task1)?.unwrap();
 
@@ -67,11 +71,11 @@ async fn test_v0_2_full_pipeline_flow() -> Result<()> {
     let pipeline_res = orchestrator.handle_task_result(&result1)?.unwrap();
 
     if let PipelineResult::NextStage(node2_id, task2) = pipeline_res {
-        assert_eq!(node2_id, "node2");
+        assert_eq!(node2_id, id2);
 
         // 5. Node 2 processes task
         let mut backend2 = MockBackend { state: vec![] };
-        let executor2 = Executor::new("node2".into(), orchestrator.cluster_key);
+        let executor2 = Executor::new(id2.to_string(), orchestrator.cluster_key);
         let result2 = executor2.run_task(&mut backend2, task2)?.unwrap();
 
         // 6. Master handles final result

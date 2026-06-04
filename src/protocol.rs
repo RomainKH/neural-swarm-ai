@@ -1,5 +1,6 @@
 use crate::compute::profile::NodeProfile;
 use crate::compute::status::NodeStatus;
+use crate::pipeline::RouteTicket;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +43,8 @@ pub enum SwarmMessage {
         start_layer: u32,
         end_layer: u32,
         tokens: Vec<i32>,
+        /// The routing instructions for the decentralized mesh.
+        route: Option<RouteTicket>,
     },
     /// Node sends computation result back to Master.
     TaskResult {
@@ -135,6 +138,7 @@ mod tests {
             start_layer: 0,
             end_layer: 16,
             tokens: vec![1, 2, 3, 4, 5],
+            route: None,
         });
     }
 

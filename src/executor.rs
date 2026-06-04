@@ -66,6 +66,7 @@ impl Executor {
             start_layer,
             end_layer,
             tokens,
+            ..
         } = task
         {
             // 1. Decrypt and Decompress received state
