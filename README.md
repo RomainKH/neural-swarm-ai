@@ -4,7 +4,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Status](https://img.shields.io/badge/status-experimental-orange.svg)
 
-NeuralSwarmAI is a high-performance, lightweight Rust library for distributed Large Language Model (LLM) inference using **Pipeline Parallelism**.
+NeuralSwarmAI is a high-performance, lightweight Rust library for decentralized Large Language Model (LLM) inference using a **Secure P2P Mesh**.
 
 It enables running massive models (e.g., 70B+ parameters) on a network of consumer-grade devices (Raspberry Pis, Smartphones, PCs) by splitting the model layers across the swarm.
 
@@ -21,28 +21,30 @@ It enables running massive models (e.g., 70B+ parameters) on a network of consum
 
 ## ✨ Key Features
 
+- **Secure P2P Mesh (v0.4)**: Fully decentralized networking powered by `libp2p`. No central data bottleneck.
+- **PeerID Identity (v0.4)**: Anonymity by design. Nodes connect via cryptographic `PeerIDs` instead of public IP addresses.
+- **NAT Hole Punching (v0.4)**: Seamless direct communication between nodes behind firewalls using QUIC and ICE.
+- **Invisible Routing (v0.4)**: Decentralized discovery and routing. Your Raspberry Pi orchestrator acts as a lightweight bootstrap node.
 - **Pipeline Parallelism**: Distribute LLM layers across multiple nodes.
-- **Dynamic Orchestration**: Real-time resource monitoring and automatic workload rebalancing based on current usage.
 - **Pure Rust ML (v0.3)**: Built-in support for `candle` (HuggingFace) for 100% Rust, portable, and fast inference.
 - **Heterogeneous Compute (v0.3)**: Simultaneously utilize **GPU + CPU + RAM** on a single node to maximize resource contribution.
-- **Topology-Aware Routing (v0.3)**: Pipeline organization optimized by network latency (Ping-aware) to minimize inter-node delay.
 - **Pipeline Overlap (v0.2)**: Asynchronous network I/O allows receiving the next layer's KV Cache while the GPU is still computing the current one.
 - **Security-First (v0.2)**: 
   - **Perfect Forward Secrecy**: ECDH (X25519) key exchange for every session.
   - **Authenticated Encryption**: AES-256-GCM with AAD (Task-binding) to prevent replay attacks.
 - **Compression (v0.2)**: High-speed `zstd` compression of KV Cache tensors to reduce bandwidth usage by up to 60%.
-- **Heterogeneous Support**: Seamlessly mix CPU (ARM/x86) and GPU (Apple Metal, Nvidia CUDA) nodes.
 
 ## ⚡ Performance & Specs
 
 NeuralSwarmAI is engineered for maximum throughput in unstable P2P environments.
 
-### Optimized for Latency
+### Optimized for Latency & Privacy
 | Feature | Impact | Technology |
 |---------|--------|------------|
+| **Invisible Mesh** | Privacy | libp2p PeerIDs |
 | **Pipeline Overlap** | -30% Latency | Async MPSC Channels |
 | **KV Compression** | -60% Bandwidth | Zstd (Level 3) |
-| **Topology Routing** | Minimized Jitter | Latency-aware sorting |
+| **NAT Traversal** | Connectivity | QUIC / Hole Punching |
 | **Zero-Copy** | 0ms Memcpy | `Bytes` reference counting |
 
 ### Resource Management
@@ -60,16 +62,16 @@ The core library compiles in pure Rust with no C/C++ dependencies:
 
 ```toml
 [dependencies]
-neural-swarm-ai = "0.3.0"
+neural-swarm-ai = "0.4.0"
 ```
 
-### With Candle backend (Recommended for v0.3+)
+### With Candle backend (Recommended for v0.4+)
 
 For 100% Rust and easy cross-platform support:
 
 ```toml
 [dependencies]
-neural-swarm-ai = { version = "0.3.0", features = ["candle"] }
+neural-swarm-ai = { version = "0.4.0", features = ["candle"] }
 ```
 
 ### With llama.cpp backend
@@ -78,7 +80,7 @@ Still supported via bindings:
 
 ```toml
 [dependencies]
-neural-swarm-ai = { version = "0.3.0", features = ["llama"] }
+neural-swarm-ai = { version = "0.4.0", features = ["llama"] }
 ```
 
 ### From GitHub

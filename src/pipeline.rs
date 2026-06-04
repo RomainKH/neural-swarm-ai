@@ -1,7 +1,29 @@
 use crate::protocol::SwarmMessage;
+use libp2p::PeerId;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Tracks an active inference sequence.
+/// A ticket defining the route for an inference sequence.
+///
+/// This allows the orchestrator to be "Stateless". It generates the ticket
+/// and the data travels with it from node to node without master intervention.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RouteTicket {
+    pub task_id: String,
+    pub sequence_id: u64,
+    /// Ordered list of PeerIds in the pipeline.
+    pub nodes: Vec<PeerId>,
+    /// Index of the node currently processing the task.
+    pub current_index: usize,
+}
+
+impl RouteTicket {
+    pub fn next_peer(&self) -> Option<PeerId> {
+        self.nodes.get(self.current_index + 1).cloned()
+    }
+}
+
+/// Tracks an active inference sequence (Master side for monitoring).
 #[derive(Debug, Clone)]
 pub struct SequenceState {
     pub sequence_id: u64,
@@ -13,7 +35,7 @@ pub struct SequenceState {
 /// The outcome of processing a task result in the pipeline.
 pub enum PipelineResult {
     /// The pipeline continues; send the provided task to the specified node.
-    NextStage(String, SwarmMessage),
+    NextStage(PeerId, Box<SwarmMessage>),
     /// The pipeline has finished; these are the final logits.
     Finished(Vec<f32>),
 }
@@ -23,8 +45,8 @@ pub enum PipelineResult {
 pub struct InferencePipeline {
     /// Maps a task_id to its ongoing sequence state
     active_sequences: HashMap<String, SequenceState>,
-    /// Sorted list of node IDs that represent the pipeline stages
-    pipeline_stages: Vec<String>,
+    /// Sorted list of node PeerIds that represent the pipeline stages
+    pipeline_stages: Vec<PeerId>,
 }
 
 impl InferencePipeline {
@@ -33,8 +55,8 @@ impl InferencePipeline {
     }
 
     /// Updates the pipeline stages based on the latest sorted registry nodes.
-    pub fn update_stages(&mut self, sorted_node_ids: Vec<String>) {
-        self.pipeline_stages = sorted_node_ids;
+    pub fn update_stages(&mut self, sorted_node_peers: Vec<PeerId>) {
+        self.pipeline_stages = sorted_node_peers;
     }
 
     /// Starts a new sequence. Returns the ProcessTask for the first node if available.
@@ -45,7 +67,7 @@ impl InferencePipeline {
         tokens: Vec<i32>,
         initial_state: bytes::Bytes,
         first_node_layers: (u32, u32),
-    ) -> Option<(String, SwarmMessage)> {
+    ) -> Option<(PeerId, SwarmMessage)> {
         if self.pipeline_stages.is_empty() {
             return None;
         }
@@ -60,7 +82,15 @@ impl InferencePipeline {
             },
         );
 
-        let first_node_id = self.pipeline_stages[0].clone();
+        let first_node_peer = self.pipeline_stages[0];
+
+        let route = RouteTicket {
+            task_id: task_id.clone(),
+            sequence_id,
+            nodes: self.pipeline_stages.clone(),
+            current_index: 0,
+        };
+
         let task = SwarmMessage::ProcessTask {
             task_id,
             sequence_id,
@@ -68,17 +98,18 @@ impl InferencePipeline {
             start_layer: first_node_layers.0,
             end_layer: first_node_layers.1,
             tokens,
+            route: Some(route),
         };
 
-        Some((first_node_id, task))
+        Some((first_node_peer, task))
     }
 
-    /// Returns the ID of the next node in the pipeline for a given task, if any.
-    pub fn get_next_node_id(&self, task_id: &str) -> Option<String> {
+    /// Returns the PeerId of the next node in the pipeline for a given task, if any.
+    pub fn get_next_peer_id(&self, task_id: &str) -> Option<PeerId> {
         if let Some(state) = self.active_sequences.get(task_id) {
             let next_index = state.current_node_index + 1;
             if next_index < self.pipeline_stages.len() {
-                return Some(self.pipeline_stages[next_index].clone());
+                return Some(self.pipeline_stages[next_index]);
             }
         }
         None
@@ -107,7 +138,15 @@ impl InferencePipeline {
                 state.current_node_index += 1;
 
                 if state.current_node_index < self.pipeline_stages.len() {
-                    let next_node_id = self.pipeline_stages[state.current_node_index].clone();
+                    let next_peer_id = self.pipeline_stages[state.current_node_index];
+
+                    let next_route = RouteTicket {
+                        task_id: task_id.clone(),
+                        sequence_id: *sequence_id,
+                        nodes: self.pipeline_stages.clone(),
+                        current_index: state.current_node_index,
+                    };
+
                     let next_task = SwarmMessage::ProcessTask {
                         task_id: task_id.clone(),
                         sequence_id: *sequence_id,
@@ -115,8 +154,9 @@ impl InferencePipeline {
                         start_layer: next_node_layers.0,
                         end_layer: next_node_layers.1,
                         tokens: state.tokens.clone(),
+                        route: Some(next_route),
                     };
-                    return Some(PipelineResult::NextStage(next_node_id, next_task));
+                    return Some(PipelineResult::NextStage(next_peer_id, Box::new(next_task)));
                 } else {
                     // Pipeline finished for this task
                     let final_logits = logits.clone();

@@ -1,15 +1,17 @@
 [package]
 name = "neural-swarm-ai"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Romain Khanoyan"]
 edition = "2021"
-description = "A lightweight Rust library for distributed LLM inference using Pipeline Parallelism."
+description = "A lightweight Rust library for decentralized LLM inference using a Secure P2P Mesh."
 license = "MIT"
 repository = "https://github.com/RomainKH/neural-swarm-ai"
 keywords = ["llm", "ai", "distributed", "p2p", "inference"]
 categories = ["science", "network-programming"]
 
 [dependencies]
+# Core networking & async
+libp2p = { version = "0.54", features = ["tokio", "noise", "yamux", "quic", "tcp", "dns", "identify", "ping", "kad", "serde"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"

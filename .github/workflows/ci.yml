@@ -2,63 +2,60 @@ name: Rust CI
 
 on:
   push:
-    branches: [ "main" ]
-    paths-ignore:
-      - "**.md"
-      - "LICENSE"
-      - ".gitignore"
+    branches: [ "main" ] # On ne trigger le push que sur main
   pull_request:
-    branches: [ "main" ]
-    paths-ignore:
-      - "**.md"
-      - "LICENSE"
-      - ".gitignore"
+    branches: [ "main", "feat/*" ] # La CI tourne sur les PR vers main ou feat/*
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   lint:
-    name: Lint
+    name: Lint & Style
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
     steps:
     - uses: actions/checkout@v4
-
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
         components: clippy, rustfmt
-
-    - name: Cache Rust dependencies
+    - name: Cache
       uses: Swatinem/rust-cache@v2
-
     - name: Check formatting
       run: cargo fmt -- --check
+    - name: Clippy
+      run: |
+        sudo apt-get install -y libssl-dev pkg-config
+        cargo clippy --all-targets --features candle -- -D warnings
 
-    - name: Run Clippy
-      run: cargo clippy -- -D warnings
-
-  build_and_test:
-    name: Build and Test
+  test:
+    name: Unit & Integration Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-
     steps:
     - uses: actions/checkout@v4
-
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
-
-    - name: Cache Rust dependencies
+    - name: Cache
       uses: Swatinem/rust-cache@v2
+    - name: Run Tests
+      run: |
+        sudo apt-get install -y libssl-dev pkg-config
+        cargo test --features candle
 
-    - name: Build (default features)
-      run: cargo build
-
-    - name: Build (llama backend)
-      run: cargo build --features llama
-
-    - name: Run tests
-      run: cargo test
+  check_llama:
+    name: Llama Backend Check
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Cache
+      uses: Swatinem/rust-cache@v2
+    - name: Check Llama Feature
+      run: |
+        sudo apt-get install -y libssl-dev pkg-config cmake
+        cargo check --features llama

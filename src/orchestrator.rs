@@ -209,7 +209,13 @@ impl Orchestrator {
             let per_node = total_layers / sorted.len() as u32;
             let mut current = 0u32;
             let ids: Vec<String> = sorted.iter().map(|n| n.id.clone()).collect();
-            pipeline_lock.update_stages(ids.clone());
+
+            let peers: Vec<libp2p::PeerId> = ids
+                .iter()
+                .filter_map(|id| id.parse::<libp2p::PeerId>().ok())
+                .collect();
+            pipeline_lock.update_stages(peers);
+
             for (i, id) in ids.iter().enumerate() {
                 let count = if i == ids.len() - 1 {
                     total_layers.saturating_sub(current)
@@ -229,11 +235,11 @@ impl Orchestrator {
             .map(|n| (n.id.clone(), n.capacity.composite))
             .collect();
 
-        let stage_ids = ids_and_composites
+        let stage_peers: Vec<libp2p::PeerId> = ids_and_composites
             .iter()
-            .map(|(id, _)| id.clone())
+            .filter_map(|(id, _)| id.parse::<libp2p::PeerId>().ok())
             .collect();
-        pipeline_lock.update_stages(stage_ids);
+        pipeline_lock.update_stages(stage_peers);
 
         for (i, (id, composite)) in ids_and_composites.iter().enumerate() {
             let is_last = i == ids_and_composites.len() - 1;
@@ -259,7 +265,7 @@ impl Orchestrator {
         task_id: String,
         tokens: Vec<i32>,
         initial_state: bytes::Bytes,
-    ) -> Result<Option<(String, SwarmMessage)>> {
+    ) -> Result<Option<(libp2p::PeerId, SwarmMessage)>> {
         let registry = self
             .registry
             .read()
@@ -273,7 +279,14 @@ impl Orchestrator {
         if sorted.is_empty() {
             return Ok(None);
         }
+
+        // In v0.4, node IDs should be parseable as PeerIds
         let first_node = &sorted[0];
+        let first_peer_id = first_node
+            .id
+            .parse::<libp2p::PeerId>()
+            .map_err(|e| anyhow::anyhow!("Invalid PeerId in registry: {}", e))?;
+
         let start_layer = *first_node.assigned_layers.first().unwrap_or(&0);
         let end_layer = *first_node.assigned_layers.last().unwrap_or(&0) + 1;
 
@@ -283,13 +296,15 @@ impl Orchestrator {
             crate::crypto::encrypt_with_aad(&compressed, &self.cluster_key, task_id.as_bytes())
                 .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
 
-        Ok(pipeline.start_sequence(
-            sequence_id,
-            task_id,
-            tokens,
-            bytes::Bytes::from(encrypted),
-            (start_layer, end_layer),
-        ))
+        Ok(pipeline
+            .start_sequence(
+                sequence_id,
+                task_id,
+                tokens,
+                bytes::Bytes::from(encrypted),
+                (start_layer, end_layer),
+            )
+            .map(|(_, msg)| (first_peer_id, msg)))
     }
 
     /// Handles a TaskResult. If the pipeline continues, returns the ProcessTask for the next node.
@@ -304,8 +319,9 @@ impl Orchestrator {
             .map_err(|e| anyhow::anyhow!("Failed to acquire pipeline lock: {}", e))?;
 
         if let SwarmMessage::TaskResult { task_id, .. } = result {
-            if let Some(next_id) = pipeline.get_next_node_id(task_id) {
-                if let Some(next_node) = registry.get(&next_id) {
+            if let Some(next_peer_id) = pipeline.get_next_peer_id(task_id) {
+                // Find node by its PeerId string
+                if let Some(next_node) = registry.get(&next_peer_id.to_string()) {
                     let start_layer = *next_node.assigned_layers.first().unwrap_or(&0);
                     let end_layer = *next_node.assigned_layers.last().unwrap_or(&0) + 1;
 
