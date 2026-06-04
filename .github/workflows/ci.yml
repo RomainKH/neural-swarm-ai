@@ -9,46 +9,53 @@ on:
       - ".gitignore"
   pull_request:
     branches: [ "main" ]
-    paths-ignore:
-      - "**.md"
-      - "LICENSE"
-      - ".gitignore"
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check_and_test:
-    name: Check and Test
+  lint:
+    name: Lint & Style
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
     steps:
     - uses: actions/checkout@v4
-
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
         components: clippy, rustfmt
-
-    - name: Cache Rust dependencies
+    - name: Cache
       uses: Swatinem/rust-cache@v2
-
-    - name: Install System Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y cmake build-essential libssl-dev pkg-config
-
     - name: Check formatting
       run: cargo fmt -- --check
-
-    - name: Run Clippy (Standard + Candle)
-      run: cargo clippy --all-targets --features candle -- -D warnings
-
-    - name: Build and Test (Standard + Candle)
+    - name: Clippy
       run: |
-        cargo build --features candle
+        sudo apt-get install -y libssl-dev pkg-config
+        cargo clippy --all-targets --features candle -- -D warnings
+
+  test:
+    name: Unit & Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Cache
+      uses: Swatinem/rust-cache@v2
+    - name: Run Tests
+      run: |
+        sudo apt-get install -y libssl-dev pkg-config
         cargo test --features candle
 
-    - name: Check llama backend (Compilation only)
-      run: cargo check --features llama
+  check_llama:
+    name: Llama Backend Check
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Cache
+      uses: Swatinem/rust-cache@v2
+    - name: Check Llama Feature
+      run: |
+        sudo apt-get install -y libssl-dev pkg-config cmake
+        cargo check --features llama
