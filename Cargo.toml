@@ -1,6 +1,6 @@
 [package]
 name = "neural-swarm-ai"
-version = "0.1.0"
+version = "0.3.0"
 authors = ["Romain Khanoyan"]
 edition = "2021"
 description = "A lightweight Rust library for distributed LLM inference using Pipeline Parallelism."

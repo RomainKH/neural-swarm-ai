@@ -60,7 +60,7 @@ The core library compiles in pure Rust with no C/C++ dependencies:
 
 ```toml
 [dependencies]
-neural-swarm-ai = "0.1.0"
+neural-swarm-ai = "0.3.0"
 ```
 
 ### With Candle backend (Recommended for v0.3+)
@@ -69,7 +69,7 @@ For 100% Rust and easy cross-platform support:
 
 ```toml
 [dependencies]
-neural-swarm-ai = { version = "0.1.0", features = ["candle"] }
+neural-swarm-ai = { version = "0.3.0", features = ["candle"] }
 ```
 
 ### With llama.cpp backend
@@ -78,7 +78,7 @@ Still supported via bindings:
 
 ```toml
 [dependencies]
-neural-swarm-ai = { version = "0.1.0", features = ["llama"] }
+neural-swarm-ai = { version = "0.3.0", features = ["llama"] }
 ```
 
 ### From GitHub
