@@ -120,7 +120,14 @@ impl EffectiveCapacity {
         // Composite: weighted CPU + RAM with thermal penalty
         let thermal_penalty = status.thermal.penalty_factor();
         let raw_composite = (0.6 * cpu_score + 0.4 * ram_score).clamp(0.0, 1.0);
-        let composite = raw_composite * thermal_penalty;
+        let mut composite = raw_composite * thermal_penalty;
+
+        // Apply latency penalty for topology-aware routing
+        // 1000ms latency = 50% penalty (max)
+        if let Some(latency) = status.latency_ms {
+            let penalty = (latency as f32 / 2000.0).min(0.5);
+            composite *= 1.0 - penalty;
+        }
 
         Self {
             cpu_score,
@@ -154,6 +161,7 @@ mod tests {
             ram_used_mb: 0,
             ram_available_mb,
             thermal: ThermalState::Nominal,
+            latency_ms: None,
             measured_at: None,
         }
     }
@@ -236,6 +244,23 @@ mod tests {
 
         // Throttled should be significantly lower
         assert!(cap_throttled.composite < cap_nominal.composite * 0.5);
+    }
+
+    #[test]
+    fn test_latency_penalty() {
+        let profile = make_profile(10, 16384);
+        let status_low_lat = make_status(0.2, 12000);
+        let mut status_high_lat = status_low_lat.clone();
+        status_high_lat.latency_ms = Some(1000);
+        let reservation = ResourceReservation::for_device(&DeviceType::Desktop);
+
+        let cap_low = EffectiveCapacity::compute(&profile, &status_low_lat, &reservation);
+        let cap_high = EffectiveCapacity::compute(&profile, &status_high_lat, &reservation);
+
+        // High latency should result in lower composite score
+        assert!(cap_high.composite < cap_low.composite);
+        // 1000ms latency should be 50% penalty with current formula (1000/2000.0 = 0.5)
+        assert!((cap_high.composite - cap_low.composite * 0.5).abs() < 0.01);
     }
 
     #[test]

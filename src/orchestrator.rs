@@ -337,6 +337,7 @@ mod tests {
             ram_used_mb: 0,
             ram_available_mb: ram_avail,
             thermal: ThermalState::Nominal,
+            latency_ms: None,
             measured_at: None,
         }
     }

@@ -101,6 +101,7 @@ impl ComputeMonitor {
             ram_used_mb,
             ram_available_mb,
             thermal: super::status::ThermalState::Nominal, // TODO: platform-specific thermal detection
+            latency_ms: None,
             measured_at: Some(std::time::Instant::now()),
         }
     }
