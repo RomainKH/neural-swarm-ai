@@ -24,6 +24,7 @@ It enables running massive models (e.g., 70B+ parameters) on a network of consum
 - **Pipeline Parallelism**: Distribute LLM layers across multiple nodes.
 - **Dynamic Orchestration**: Real-time resource monitoring and automatic workload rebalancing based on current usage.
 - **Pure Rust ML (v0.3)**: Built-in support for `candle` (HuggingFace) for 100% Rust, portable, and fast inference.
+- **Heterogeneous Compute (v0.3)**: Simultaneously utilize **GPU + CPU + RAM** on a single node to maximize resource contribution.
 - **Topology-Aware Routing (v0.3)**: Pipeline organization optimized by network latency (Ping-aware) to minimize inter-node delay.
 - **Pipeline Overlap (v0.2)**: Asynchronous network I/O allows receiving the next layer's KV Cache while the GPU is still computing the current one.
 - **Security-First (v0.2)**: 
