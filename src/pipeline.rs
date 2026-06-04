@@ -1,7 +1,29 @@
 use crate::protocol::SwarmMessage;
+use libp2p::PeerId;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Tracks an active inference sequence.
+/// A ticket defining the route for an inference sequence.
+///
+/// This allows the orchestrator to be "Stateless". It generates the ticket
+/// and the data travels with it from node to node without master intervention.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteTicket {
+    pub task_id: String,
+    pub sequence_id: u64,
+    /// Ordered list of PeerIds in the pipeline.
+    pub nodes: Vec<PeerId>,
+    /// Index of the node currently processing the task.
+    pub current_index: usize,
+}
+
+impl RouteTicket {
+    pub fn next_peer(&self) -> Option<PeerId> {
+        self.nodes.get(self.current_index + 1).cloned()
+    }
+}
+
+/// Tracks an active inference sequence (Master side for monitoring).
 #[derive(Debug, Clone)]
 pub struct SequenceState {
     pub sequence_id: u64,
@@ -23,7 +45,7 @@ pub enum PipelineResult {
 pub struct InferencePipeline {
     /// Maps a task_id to its ongoing sequence state
     active_sequences: HashMap<String, SequenceState>,
-    /// Sorted list of node IDs that represent the pipeline stages
+    /// Sorted list of node IDs (now mapped to libp2p PeerIds in v0.4)
     pipeline_stages: Vec<String>,
 }
 
