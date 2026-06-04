@@ -180,7 +180,12 @@ pub mod client {
         shared_secret: &str,
         profile: NodeProfile,
         status: NodeStatus,
-    ) -> Result<([u8; 32], tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>)> {
+    ) -> Result<(
+        [u8; 32],
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    )> {
         let (ws_stream, _) = connect_async(url).await?;
         println!("🔗 Connected to swarm at {}", url);
 
@@ -255,7 +260,9 @@ pub mod client {
 
         if let Some(key) = cluster_key {
             // Reconstruct the stream from the split parts
-            let ws_stream = write.reunite(read).map_err(|e| anyhow::anyhow!("Failed to reunite stream: {}", e))?;
+            let ws_stream = write
+                .reunite(read)
+                .map_err(|e| anyhow::anyhow!("Failed to reunite stream: {}", e))?;
             Ok((key, ws_stream))
         } else {
             anyhow::bail!("Failed to obtain cluster key");

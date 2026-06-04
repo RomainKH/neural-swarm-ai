@@ -24,7 +24,7 @@ async fn main() {
     let url = "ws://127.0.0.1:3000/swarm";
     let shared_secret = "my_super_secret_token";
     match connect_to_cluster(url, shared_secret, profile, initial_status).await {
-        Ok(cluster_key) => {
+        Ok((cluster_key, _ws_stream)) => {
             println!("✅ Joined swarm! Cluster key obtained.");
             // In a real app, initialize Executor here
             // let executor = Executor::new(hostname, cluster_key);
