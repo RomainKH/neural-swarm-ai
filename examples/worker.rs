@@ -22,7 +22,8 @@ async fn main() {
     println!("⏳ Connecting to Orchestrator...");
 
     let url = "ws://127.0.0.1:3000/swarm";
-    if let Err(e) = connect_to_cluster(url, profile, initial_status).await {
+    let shared_secret = "my_super_secret_token";
+    if let Err(e) = connect_to_cluster(url, shared_secret, profile, initial_status).await {
         eprintln!("❌ Failed to connect: {}", e);
     }
 }

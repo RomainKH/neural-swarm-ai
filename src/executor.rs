@@ -44,6 +44,7 @@ impl Executor {
     ) -> Result<Option<SwarmMessage>> {
         if let SwarmMessage::ProcessTask {
             task_id,
+            sequence_id,
             input_state,
             start_layer,
             end_layer,
@@ -63,6 +64,7 @@ impl Executor {
                 task_id,
                 output_state: Bytes::from(output_state),
                 logits,
+                sequence_id,
             }));
         }
         Ok(None)
