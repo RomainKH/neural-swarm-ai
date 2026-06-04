@@ -2,17 +2,12 @@ name: Rust CI
 
 on:
   push:
-    branches: [ "main", "feat/*" ]
-    paths-ignore:
-      - "**.md"
-      - "LICENSE"
-      - ".gitignore"
+    branches: [ "main" ] # On ne trigger le push que sur main
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "feat/*" ] # La CI tourne sur les PR vers main ou feat/*
 
-# Cancel in-progress runs of the same workflow on the same branch/PR
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 env:
