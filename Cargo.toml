@@ -31,12 +31,18 @@ hkdf = "0.12"
 
 # Optional backends
 llama-cpp-2 = { version = "0.1.146", optional = true }
+candle-core = { version = "0.8", optional = true }
+candle-nn = { version = "0.8", optional = true }
+candle-transformers = { version = "0.8", optional = true }
 
 [features]
 default = ["server", "client"]
 server = ["dep:axum"]
 client = ["dep:tokio-tungstenite"]
 llama = ["dep:llama-cpp-2"]
+candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers"]
+metal = ["candle-core?/metal", "candle-nn?/metal"]
+cuda = ["candle-core?/cuda", "candle-nn?/cuda"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

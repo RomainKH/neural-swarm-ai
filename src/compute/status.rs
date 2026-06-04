@@ -22,6 +22,9 @@ pub struct NodeStatus {
     /// Current thermal state of the device.
     pub thermal: ThermalState,
 
+    /// Latency to the master node in milliseconds.
+    pub latency_ms: Option<u32>,
+
     /// Monotonic timestamp of when this status was measured.
     /// Not serialized over the network (each node has its own clock).
     #[serde(skip)]
@@ -36,6 +39,7 @@ impl NodeStatus {
             ram_used_mb: 0,
             ram_available_mb: 0,
             thermal: ThermalState::Nominal,
+            latency_ms: None,
             measured_at: None,
         }
     }
@@ -59,6 +63,7 @@ impl PartialEq for NodeStatus {
             && self.ram_used_mb == other.ram_used_mb
             && self.ram_available_mb == other.ram_available_mb
             && self.thermal == other.thermal
+            && self.latency_ms == other.latency_ms
     }
 }
 
@@ -109,6 +114,7 @@ mod tests {
             ram_used_mb: 4000,
             ram_available_mb: 4000,
             thermal: ThermalState::Nominal,
+            latency_ms: None,
             measured_at: None,
         };
         assert_eq!(s.delta(&s), 0.0);
@@ -121,6 +127,7 @@ mod tests {
             ram_used_mb: 4000,
             ram_available_mb: 4000,
             thermal: ThermalState::Nominal,
+            latency_ms: None,
             measured_at: None,
         };
         let s2 = NodeStatus {
@@ -128,6 +135,7 @@ mod tests {
             ram_used_mb: 4000,
             ram_available_mb: 4000,
             thermal: ThermalState::Nominal,
+            latency_ms: None,
             measured_at: None,
         };
         let delta = s1.delta(&s2);

@@ -10,6 +10,9 @@ pub mod protocol;
 #[cfg(feature = "llama")]
 pub mod llama_backend;
 
+#[cfg(feature = "candle")]
+pub mod candle_backend;
+
 #[cfg(any(feature = "server", feature = "client"))]
 pub mod transport;
 
@@ -24,3 +27,6 @@ pub use protocol::SwarmMessage;
 
 #[cfg(feature = "llama")]
 pub use llama_backend::LlamaBackend;
+
+#[cfg(feature = "candle")]
+pub use candle_backend::CandleBackend;
