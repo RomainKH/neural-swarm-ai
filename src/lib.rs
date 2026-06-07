@@ -13,6 +13,9 @@ pub mod llama_backend;
 #[cfg(feature = "candle")]
 pub mod candle_backend;
 
+#[cfg(feature = "candle")]
+pub mod quantized_llama;
+
 #[cfg(any(feature = "server", feature = "client"))]
 pub mod transport;
 
