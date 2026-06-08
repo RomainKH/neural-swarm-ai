@@ -72,7 +72,7 @@ impl InferenceBackend for CandleBackend {
 
         if let Some(ref mut model) = self.model {
             // Track sequence length manually or get from input
-            let mut seq_len = tokens.len();
+            let seq_len = tokens.len();
 
             let mut layer_in = if start_layer == 0 {
                 let tokens_u32: Vec<u32> = tokens.iter().map(|&t| t as u32).collect();
@@ -81,10 +81,8 @@ impl InferenceBackend for CandleBackend {
                 model.tok_embeddings.forward(&input)?
             } else {
                 // Deserialize intermediate tensor state here!
-                // For now, we return dummy tensor.
                 // In a complete implementation, `set_state` sets this.
-                let dummy = Tensor::zeros((1, seq_len, 4096), self.dtype, &self.primary_device)?;
-                dummy
+                Tensor::zeros((1, seq_len, 4096), self.dtype, &self.primary_device)?
             };
 
             let index_pos = Default::default(); // TODO: track index_pos properly
