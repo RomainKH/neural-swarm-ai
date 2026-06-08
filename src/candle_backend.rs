@@ -1,8 +1,8 @@
+use crate::quantized_llama::ModelWeights;
 use crate::InferenceBackend;
 use anyhow::Result;
-use candle_core::{DType, Device, Tensor};
 use candle_core::quantized::gguf_file;
-use crate::quantized_llama::ModelWeights;
+use candle_core::{DType, Device, Tensor};
 
 /// Inference backend using the HuggingFace Candle framework (100% Rust).
 ///
@@ -39,7 +39,7 @@ impl CandleBackend {
 unsafe impl Send for CandleBackend {}
 unsafe impl Sync for CandleBackend {}
 
-use candle_core::{Module, IndexOp};
+use candle_core::{IndexOp, Module};
 
 impl InferenceBackend for CandleBackend {
     fn set_state(&mut self, state: &[u8]) -> Result<()> {
@@ -76,7 +76,8 @@ impl InferenceBackend for CandleBackend {
 
             let mut layer_in = if start_layer == 0 {
                 let tokens_u32: Vec<u32> = tokens.iter().map(|&t| t as u32).collect();
-                let input = Tensor::new(tokens_u32.as_slice(), &self.primary_device)?.unsqueeze(0)?;
+                let input =
+                    Tensor::new(tokens_u32.as_slice(), &self.primary_device)?.unsqueeze(0)?;
                 model.tok_embeddings.forward(&input)?
             } else {
                 // Deserialize intermediate tensor state here!
@@ -99,11 +100,11 @@ impl InferenceBackend for CandleBackend {
 
             for layer_idx in (start_layer as usize)..actual_end_layer {
                 let layer = &mut model.layers[layer_idx];
-                
+
                 let x = &layer_in;
                 let residual = x;
                 let x = layer.attention_norm.forward(x)?;
-                
+
                 // MQA / SDPA attention
                 let attn = layer.forward_attn(&x, mask.as_ref(), index_pos)?;
                 let x = (attn + residual)?;
@@ -124,7 +125,7 @@ impl InferenceBackend for CandleBackend {
                 let x = model.norm.forward(&layer_in)?;
                 let x = x.i((.., seq_len - 1, ..))?;
                 let logits_tensor = model.output.forward(&x)?;
-                
+
                 // Flatten logits back to vec
                 let logits: Vec<f32> = logits_tensor.flatten_all()?.to_vec1()?;
                 return Ok(logits);
