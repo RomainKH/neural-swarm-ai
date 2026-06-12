@@ -61,6 +61,7 @@ impl InferenceBackend for LlamaBackend<'_, '_> {
         _start_layer: u32,
         _end_layer: u32,
         _tokens: &[i32],
+        _sequence_id: usize,
     ) -> Result<Vec<f32>> {
         // TODO: Implement layer-specific inference.
         // In a full implementation, this would:

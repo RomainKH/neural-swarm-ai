@@ -95,7 +95,7 @@ impl InferenceBackend for CandleBackend {
         Ok(vec![])
     }
 
-    fn run_layers(&mut self, start_layer: u32, end_layer: u32, tokens: &[i32]) -> Result<Vec<f32>> {
+    fn run_layers(&mut self, start_layer: u32, end_layer: u32, tokens: &[i32], sequence_id: usize) -> Result<Vec<f32>> {
         println!(
             "🔥 [Candle] Running layers {} to {} with {} tokens on primary device ({:?})",
             start_layer,
@@ -121,7 +121,7 @@ impl InferenceBackend for CandleBackend {
                 }
             };
 
-            let index_pos = Default::default(); // TODO: track index_pos properly
+            let index_pos = sequence_id; // Use real sequence_id instead of Default::default()
 
             let mask = if seq_len == 1 {
                 None
