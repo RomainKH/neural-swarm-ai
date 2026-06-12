@@ -114,9 +114,11 @@ impl InferenceBackend for CandleBackend {
                     Tensor::new(tokens_u32.as_slice(), &self.primary_device)?.unsqueeze(0)?;
                 model.tok_embeddings.forward(&input)?
             } else {
-                // Deserialize intermediate tensor state here!
-                // In a complete implementation, `set_state` sets this.
-                Tensor::zeros((1, seq_len, 4096), self.dtype, &self.primary_device)?
+                if let Some(state) = self.intermediate_state.take() {
+                    state
+                } else {
+                    Tensor::zeros((1, seq_len, 4096), self.dtype, &self.primary_device)?
+                }
             };
 
             let index_pos = Default::default(); // TODO: track index_pos properly
@@ -151,7 +153,7 @@ impl InferenceBackend for CandleBackend {
             }
 
             // Save intermediate state (to be serialized in get_state)
-            // self.intermediate_state = Some(layer_in.clone());
+            self.intermediate_state = Some(layer_in.clone());
 
             if end_layer as usize >= model.layers.len() {
                 let x = model.norm.forward(&layer_in)?;
