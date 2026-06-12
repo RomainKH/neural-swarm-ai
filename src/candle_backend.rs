@@ -41,10 +41,27 @@ unsafe impl Sync for CandleBackend {}
 
 use candle_core::{IndexOp, Module};
 
+#[derive(serde::Serialize, serde::Deserialize)]
+enum KVCacheState {
+    F32(usize, usize, usize, Vec<f32>),
+    Q8_0(usize, usize, usize, f32, Vec<i8>),
+}
+
 impl InferenceBackend for CandleBackend {
     fn set_state(&mut self, state: &[u8]) -> Result<()> {
         if !state.is_empty() {
-            let (d1, d2, d3, data): (usize, usize, usize, Vec<f32>) = bincode::deserialize(state)?;
+            let result: std::result::Result<KVCacheState, _> = bincode::deserialize(state);
+            let (d1, d2, d3, data) = match result {
+                Ok(KVCacheState::Q8_0(d1, d2, d3, scale, q_data)) => {
+                    let f_data: Vec<f32> = q_data.into_iter().map(|v| (v as f32) * scale).collect();
+                    (d1, d2, d3, f_data)
+                }
+                Ok(KVCacheState::F32(d1, d2, d3, f_data)) => (d1, d2, d3, f_data),
+                Err(_) => {
+                    let (d1, d2, d3, f_data): (usize, usize, usize, Vec<f32>) = bincode::deserialize(state)?;
+                    (d1, d2, d3, f_data)
+                }
+            };
             let tensor = Tensor::from_vec(data, (d1, d2, d3), &self.primary_device)?;
             self.intermediate_state = Some(tensor);
         }
@@ -55,7 +72,24 @@ impl InferenceBackend for CandleBackend {
         if let Some(state) = &self.intermediate_state {
             let (d1, d2, d3) = state.dims3()?;
             let data: Vec<f32> = state.flatten_all()?.to_vec1()?;
-            let buffer = bincode::serialize(&(d1, d2, d3, data))?;
+            
+            let mut max_abs: f32 = 0.0;
+            for &val in &data {
+                let abs_val = val.abs();
+                if abs_val > max_abs {
+                    max_abs = abs_val;
+                }
+            }
+            
+            let scale = max_abs / 127.0;
+            let q_data: Vec<i8> = if scale == 0.0 {
+                vec![0; data.len()]
+            } else {
+                data.iter().map(|&v| (v / scale).round() as i8).collect()
+            };
+            
+            let state_enum = KVCacheState::Q8_0(d1, d2, d3, scale, q_data);
+            let buffer = bincode::serialize(&state_enum)?;
             return Ok(buffer);
         }
         Ok(vec![])
