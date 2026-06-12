@@ -45,6 +45,7 @@ llama = ["dep:llama-cpp-2"]
 candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers"]
 metal = ["candle-core?/metal", "candle-nn?/metal"]
 cuda = ["candle-core?/cuda", "candle-nn?/cuda"]
+vulkan = []
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
