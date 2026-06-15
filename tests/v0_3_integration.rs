@@ -16,7 +16,13 @@ impl InferenceBackend for MockBackend {
     fn get_state(&self) -> Result<Vec<u8>> {
         Ok(self.state.clone())
     }
-    fn run_layers(&mut self, _start: u32, _end: u32, tokens: &[i32]) -> Result<Vec<f32>> {
+    fn run_layers(
+        &mut self,
+        _start: u32,
+        _end: u32,
+        tokens: &[i32],
+        _sequence_id: usize,
+    ) -> Result<Vec<f32>> {
         Ok(tokens.iter().map(|&t| t as f32 / 10.0).collect())
     }
 }

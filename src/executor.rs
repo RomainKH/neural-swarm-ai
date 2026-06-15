@@ -83,7 +83,8 @@ impl Executor {
             backend.set_state(&decompressed)?;
 
             // 3. Run inference on assigned layers
-            let logits = backend.run_layers(start_layer, end_layer, &tokens, sequence_id as usize)?;
+            let logits =
+                backend.run_layers(start_layer, end_layer, &tokens, sequence_id as usize)?;
 
             // 4. Extract updated state
             let output_raw = backend.get_state()?;
