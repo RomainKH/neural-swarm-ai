@@ -35,6 +35,7 @@ use std::sync::{Arc, RwLock};
 use crate::pipeline::{InferencePipeline, PipelineResult};
 use rand::Rng;
 
+#[derive(Clone)]
 pub struct Orchestrator {
     pub registry: Arc<RwLock<NodeRegistry>>,
     pub pipeline: Arc<RwLock<InferencePipeline>>,
@@ -166,6 +167,38 @@ impl Orchestrator {
             .map_err(|e| anyhow::anyhow!("Failed to acquire registry lock: {}", e))?;
 
         registry.heartbeat(device_id);
+        Ok(())
+    }
+
+    /// Prunes nodes that haven't sent a heartbeat/status in `timeout_secs`.
+    pub fn prune_dead_nodes(&self, timeout_secs: u64) -> Result<()> {
+        let mut registry = self
+            .registry
+            .write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire registry lock: {}", e))?;
+
+        let now = std::time::Instant::now();
+        let mut dead_ids = Vec::new();
+
+        // Need to iterate without holding mutable borrows for too long, but we have lock
+        for (id, entry) in registry.iter_mut() {
+            if now.duration_since(entry.last_heartbeat).as_secs() > timeout_secs {
+                dead_ids.push(id.clone());
+            }
+        }
+
+        if dead_ids.is_empty() {
+            return Ok(());
+        }
+
+        for id in dead_ids {
+            println!("💀 [Orchestrator] Pruning dead node: {}", id);
+            registry.remove(&id);
+        }
+
+        if !registry.is_empty() {
+            Self::rebalance_layers(&mut registry, self.total_model_layers, &self.pipeline);
+        }
         Ok(())
     }
 
