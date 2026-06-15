@@ -52,5 +52,11 @@ pub trait InferenceBackend: Send + Sync {
     /// - `tokens`: Input token IDs.
     ///
     /// Returns the output logits (probability distribution over vocabulary).
-    fn run_layers(&mut self, start_layer: u32, end_layer: u32, tokens: &[i32], sequence_id: usize) -> Result<Vec<f32>>;
+    fn run_layers(
+        &mut self,
+        start_layer: u32,
+        end_layer: u32,
+        tokens: &[i32],
+        sequence_id: usize,
+    ) -> Result<Vec<f32>>;
 }

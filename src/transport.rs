@@ -263,7 +263,10 @@ pub mod client {
                 anyhow::bail!("Expected AuthChallenge from server, but got: {:?}", bin);
             }
         } else {
-            anyhow::bail!("Connection closed or invalid message before AuthChallenge. Got: {:?}", first_msg);
+            anyhow::bail!(
+                "Connection closed or invalid message before AuthChallenge. Got: {:?}",
+                first_msg
+            );
         }
 
         if let Some(key) = cluster_key {

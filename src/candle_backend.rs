@@ -58,7 +58,8 @@ impl InferenceBackend for CandleBackend {
                 }
                 Ok(KVCacheState::F32(d1, d2, d3, f_data)) => (d1, d2, d3, f_data),
                 Err(_) => {
-                    let (d1, d2, d3, f_data): (usize, usize, usize, Vec<f32>) = bincode::deserialize(state)?;
+                    let (d1, d2, d3, f_data): (usize, usize, usize, Vec<f32>) =
+                        bincode::deserialize(state)?;
                     (d1, d2, d3, f_data)
                 }
             };
@@ -72,7 +73,7 @@ impl InferenceBackend for CandleBackend {
         if let Some(state) = &self.intermediate_state {
             let (d1, d2, d3) = state.dims3()?;
             let data: Vec<f32> = state.flatten_all()?.to_vec1()?;
-            
+
             let mut max_abs: f32 = 0.0;
             for &val in &data {
                 let abs_val = val.abs();
@@ -80,14 +81,14 @@ impl InferenceBackend for CandleBackend {
                     max_abs = abs_val;
                 }
             }
-            
+
             let scale = max_abs / 127.0;
             let q_data: Vec<i8> = if scale == 0.0 {
                 vec![0; data.len()]
             } else {
                 data.iter().map(|&v| (v / scale).round() as i8).collect()
             };
-            
+
             let state_enum = KVCacheState::Q8_0(d1, d2, d3, scale, q_data);
             let buffer = bincode::serialize(&state_enum)?;
             return Ok(buffer);
@@ -95,7 +96,13 @@ impl InferenceBackend for CandleBackend {
         Ok(vec![])
     }
 
-    fn run_layers(&mut self, start_layer: u32, end_layer: u32, tokens: &[i32], sequence_id: usize) -> Result<Vec<f32>> {
+    fn run_layers(
+        &mut self,
+        start_layer: u32,
+        end_layer: u32,
+        tokens: &[i32],
+        sequence_id: usize,
+    ) -> Result<Vec<f32>> {
         println!(
             "🔥 [Candle] Running layers {} to {} with {} tokens on primary device ({:?})",
             start_layer,
