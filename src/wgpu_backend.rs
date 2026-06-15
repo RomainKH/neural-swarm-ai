@@ -28,7 +28,7 @@ impl InferenceBackend for WgpuBackend {
         Ok(vec![])
     }
 
-    fn run_layers(&mut self, start_layer: u32, end_layer: u32, tokens: &[i32]) -> Result<Vec<f32>> {
+    fn run_layers(&mut self, start_layer: u32, end_layer: u32, tokens: &[i32], _sequence_id: usize) -> Result<Vec<f32>> {
         println!("🔥 [WGPU] Exécution des couches {} à {} via shader Vulkan/Metal", start_layer, end_layer);
         
         // TODO: Implémenter les kernels WGSL (WebGPU Shading Language) pour :

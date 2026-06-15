@@ -41,10 +41,27 @@ unsafe impl Sync for CandleBackend {}
 
 use candle_core::{IndexOp, Module};
 
+#[derive(serde::Serialize, serde::Deserialize)]
+enum KVCacheState {
+    F32(usize, usize, usize, Vec<f32>),
+    Q8_0(usize, usize, usize, f32, Vec<i8>),
+}
+
 impl InferenceBackend for CandleBackend {
     fn set_state(&mut self, state: &[u8]) -> Result<()> {
         if !state.is_empty() {
-            let (d1, d2, d3, data): (usize, usize, usize, Vec<f32>) = bincode::deserialize(state)?;
+            let result: std::result::Result<KVCacheState, _> = bincode::deserialize(state);
+            let (d1, d2, d3, data) = match result {
+                Ok(KVCacheState::Q8_0(d1, d2, d3, scale, q_data)) => {
+                    let f_data: Vec<f32> = q_data.into_iter().map(|v| (v as f32) * scale).collect();
+                    (d1, d2, d3, f_data)
+                }
+                Ok(KVCacheState::F32(d1, d2, d3, f_data)) => (d1, d2, d3, f_data),
+                Err(_) => {
+                    let (d1, d2, d3, f_data): (usize, usize, usize, Vec<f32>) = bincode::deserialize(state)?;
+                    (d1, d2, d3, f_data)
+                }
+            };
             let tensor = Tensor::from_vec(data, (d1, d2, d3), &self.primary_device)?;
             self.intermediate_state = Some(tensor);
         }
@@ -55,13 +72,30 @@ impl InferenceBackend for CandleBackend {
         if let Some(state) = &self.intermediate_state {
             let (d1, d2, d3) = state.dims3()?;
             let data: Vec<f32> = state.flatten_all()?.to_vec1()?;
-            let buffer = bincode::serialize(&(d1, d2, d3, data))?;
+            
+            let mut max_abs: f32 = 0.0;
+            for &val in &data {
+                let abs_val = val.abs();
+                if abs_val > max_abs {
+                    max_abs = abs_val;
+                }
+            }
+            
+            let scale = max_abs / 127.0;
+            let q_data: Vec<i8> = if scale == 0.0 {
+                vec![0; data.len()]
+            } else {
+                data.iter().map(|&v| (v / scale).round() as i8).collect()
+            };
+            
+            let state_enum = KVCacheState::Q8_0(d1, d2, d3, scale, q_data);
+            let buffer = bincode::serialize(&state_enum)?;
             return Ok(buffer);
         }
         Ok(vec![])
     }
 
-    fn run_layers(&mut self, start_layer: u32, end_layer: u32, tokens: &[i32]) -> Result<Vec<f32>> {
+    fn run_layers(&mut self, start_layer: u32, end_layer: u32, tokens: &[i32], sequence_id: usize) -> Result<Vec<f32>> {
         println!(
             "🔥 [Candle] Running layers {} to {} with {} tokens on primary device ({:?})",
             start_layer,
@@ -80,12 +114,14 @@ impl InferenceBackend for CandleBackend {
                     Tensor::new(tokens_u32.as_slice(), &self.primary_device)?.unsqueeze(0)?;
                 model.tok_embeddings.forward(&input)?
             } else {
-                // Deserialize intermediate tensor state here!
-                // In a complete implementation, `set_state` sets this.
-                Tensor::zeros((1, seq_len, 4096), self.dtype, &self.primary_device)?
+                if let Some(state) = self.intermediate_state.take() {
+                    state
+                } else {
+                    Tensor::zeros((1, seq_len, 4096), self.dtype, &self.primary_device)?
+                }
             };
 
-            let index_pos = Default::default(); // TODO: track index_pos properly
+            let index_pos = sequence_id; // Use real sequence_id instead of Default::default()
 
             let mask = if seq_len == 1 {
                 None
@@ -117,7 +153,7 @@ impl InferenceBackend for CandleBackend {
             }
 
             // Save intermediate state (to be serialized in get_state)
-            // self.intermediate_state = Some(layer_in.clone());
+            self.intermediate_state = Some(layer_in.clone());
 
             if end_layer as usize >= model.layers.len() {
                 let x = model.norm.forward(&layer_in)?;

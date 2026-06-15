@@ -17,7 +17,7 @@ tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 bytes = { version = "1.6", features = ["serde"] }
 axum = { version = "0.8", features = ["ws"], optional = true }
-tokio-tungstenite = { version = "0.26", optional = true }
+tokio-tungstenite = { version = "0.26", optional = true, features = ["rustls-tls-webpki-roots"] }
 tracing = "0.1"
 anyhow = "1.0"
 bincode = "1.3"
@@ -45,6 +45,7 @@ llama = ["dep:llama-cpp-2"]
 candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers"]
 metal = ["candle-core?/metal", "candle-nn?/metal"]
 cuda = ["candle-core?/cuda", "candle-nn?/cuda"]
+vulkan = []
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
