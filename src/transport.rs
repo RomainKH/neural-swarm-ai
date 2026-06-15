@@ -211,10 +211,10 @@ pub mod client {
                 // Generate our keys
                 let (my_secret, my_public) = crate::crypto::generate_ecdh_keys();
                 let session_key =
-                    crate::crypto::derive_session_key(&my_secret, &master_public, nonce);
+                    crate::crypto::derive_session_key(&my_secret, &master_public, &nonce);
 
                 // Respond with HMAC + our Public Key
-                let token_hash = sign_hmac(nonce, shared_secret);
+                let token_hash = sign_hmac(&nonce, shared_secret);
                 let auth_resp = SwarmMessage::AuthResponse {
                     node_id: profile.hostname.clone(),
                     token_hash,
