@@ -43,6 +43,8 @@ pub struct Orchestrator {
     pub shared_secret: String,
     /// Random key generated on startup for cluster-wide payload encryption.
     pub cluster_key: [u8; 32],
+    /// Channel to send P2P messages to the libp2p swarm event loop.
+    pub p2p_sender: Option<tokio::sync::mpsc::Sender<(libp2p::PeerId, SwarmMessage)>>,
 }
 
 impl Orchestrator {
@@ -57,6 +59,7 @@ impl Orchestrator {
             total_model_layers: total_layers,
             shared_secret,
             cluster_key,
+            p2p_sender: None,
         }
     }
 

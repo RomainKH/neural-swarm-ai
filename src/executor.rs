@@ -46,7 +46,9 @@ impl Executor {
         result_tx: mpsc::Sender<SwarmMessage>,
     ) -> Result<()> {
         while let Some(task) = task_rx.recv().await {
-            if let Some(result) = self.run_task(backend.as_mut(), task)? {
+            if let Some((result, route)) = self.run_task(backend.as_mut(), task)? {
+                // If there's a route, we would forward via P2P.
+                // For now, we still push it to result_tx which the consumer will handle.
                 result_tx.send(result).await?;
             }
         }
@@ -58,7 +60,7 @@ impl Executor {
         &self,
         backend: &mut dyn InferenceBackend,
         task: SwarmMessage,
-    ) -> Result<Option<SwarmMessage>> {
+    ) -> Result<Option<(SwarmMessage, Option<crate::pipeline::RouteTicket>)>> {
         if let SwarmMessage::ProcessTask {
             task_id,
             sequence_id,
@@ -66,7 +68,7 @@ impl Executor {
             start_layer,
             end_layer,
             tokens,
-            ..
+            route,
         } = task
         {
             // 1. Decrypt and Decompress received state
@@ -95,12 +97,12 @@ impl Executor {
                 crate::crypto::encrypt_with_aad(&compressed, &self.cluster_key, task_id.as_bytes())
                     .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
 
-            return Ok(Some(SwarmMessage::TaskResult {
+            return Ok(Some((SwarmMessage::TaskResult {
                 task_id,
                 output_state: Bytes::from(encrypted),
                 logits,
                 sequence_id,
-            }));
+            }, route)));
         }
         Ok(None)
     }
