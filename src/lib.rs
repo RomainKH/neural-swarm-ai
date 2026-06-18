@@ -6,6 +6,7 @@ pub mod node;
 pub mod orchestrator;
 pub mod pipeline;
 pub mod protocol;
+pub mod p2p;
 
 #[cfg(feature = "llama")]
 pub mod llama_backend;
