@@ -22,6 +22,7 @@ pub enum SwarmMessage {
     /// Node announces itself to the master with its hardware profile.
     NodeAnnounce {
         device_id: String,
+        peer_id: Option<String>, // For libp2p direct connections
         profile: NodeProfile,
         initial_status: NodeStatus,
     },
@@ -93,6 +94,7 @@ mod tests {
     fn test_roundtrip_node_announce() {
         roundtrip(&SwarmMessage::NodeAnnounce {
             device_id: "macbook-pro".into(),
+            peer_id: Some("12D3KooWxxxx".into()),
             profile: NodeProfile::custom(
                 crate::compute::profile::DeviceType::Laptop,
                 10,

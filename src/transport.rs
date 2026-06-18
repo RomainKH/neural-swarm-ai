@@ -85,6 +85,7 @@ pub mod server {
                     let response = match swarm_msg {
                         SwarmMessage::NodeAnnounce {
                             device_id,
+                            peer_id,
                             profile,
                             initial_status,
                         } => {
@@ -226,6 +227,7 @@ pub mod client {
                 // 2. Send NodeAnnounce
                 let announce = SwarmMessage::NodeAnnounce {
                     device_id: profile.hostname.clone(),
+                    peer_id: None, // Can be populated later when p2p starts
                     profile,
                     initial_status: status,
                 };
