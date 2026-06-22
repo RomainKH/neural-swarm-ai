@@ -7,13 +7,23 @@ use candle_core::{DType, Device, Tensor};
 /// Inference backend using the HuggingFace Candle framework (100% Rust).
 ///
 /// Support for Heterogeneous Compute: uses GPU (Metal/CUDA/WGPU) when available.
+/// Where a node reads its layer slice from.
+#[derive(Clone)]
+pub enum ModelSource {
+    /// A local GGUF file.
+    Path(std::path::PathBuf),
+    /// A remote GGUF fetched over HTTP range requests — participate without a local copy.
+    #[cfg(feature = "http")]
+    Url(String),
+}
+
 pub struct CandleBackend {
     pub primary_device: Device,
     pub model: Option<ModelWeights>,
     pub dtype: DType,
     pub intermediate_state: Option<Tensor>,
-    /// GGUF file path this node loads its layer slice from.
-    pub source: Option<std::path::PathBuf>,
+    /// Where this node loads its layer slice from (local file or remote URL).
+    pub source: Option<ModelSource>,
     /// The absolute layer range currently resident in memory, if any.
     pub loaded_range: Option<(u32, u32)>,
     // TODO: Add proper distributed KV cache
@@ -39,16 +49,25 @@ impl CandleBackend {
         let model = ModelWeights::from_gguf(gguf, &mut file, &self.primary_device)?;
         let total = model.total_layers as u32;
         self.model = Some(model);
-        self.source = Some(filename.to_path_buf());
+        self.source = Some(ModelSource::Path(filename.to_path_buf()));
         self.loaded_range = Some((0, total));
         Ok(())
     }
 
-    /// Registers the GGUF file WITHOUT loading any layers yet. The actual slice is
-    /// loaded lazily by `ensure_layers` based on the range each task requests — so
+    /// Registers a local GGUF file WITHOUT loading any layers yet. The actual slice
+    /// is loaded lazily by `ensure_layers` based on the range each task requests — so
     /// a node only ever holds the layers it was assigned, never the whole model.
     pub fn set_model_source(&mut self, filename: &std::path::Path) {
-        self.source = Some(filename.to_path_buf());
+        self.source = Some(ModelSource::Path(filename.to_path_buf()));
+        self.model = None;
+        self.loaded_range = None;
+    }
+
+    /// Registers a REMOTE GGUF (URL). Layer slices are streamed over HTTP range
+    /// requests on demand — the node participates without ever storing the model.
+    #[cfg(feature = "http")]
+    pub fn set_model_url(&mut self, url: &str) {
+        self.source = Some(ModelSource::Url(url.to_string()));
         self.model = None;
         self.loaded_range = None;
     }
@@ -60,19 +79,36 @@ impl CandleBackend {
         if self.loaded_range == Some((start, end)) && self.model.is_some() {
             return Ok(());
         }
-        let path = self
+        let source = self
             .source
             .clone()
             .ok_or_else(|| anyhow::anyhow!("CandleBackend: no model source set"))?;
-        let mut file = std::fs::File::open(&path)?;
-        let gguf = gguf_file::Content::read(&mut file)?;
-        let model = ModelWeights::from_gguf_partial(
-            gguf,
-            &mut file,
-            &self.primary_device,
-            start as usize,
-            end as usize,
-        )?;
+        let model = match source {
+            ModelSource::Path(path) => {
+                let mut file = std::fs::File::open(&path)?;
+                let gguf = gguf_file::Content::read(&mut file)?;
+                ModelWeights::from_gguf_partial(
+                    gguf,
+                    &mut file,
+                    &self.primary_device,
+                    start as usize,
+                    end as usize,
+                )?
+            }
+            #[cfg(feature = "http")]
+            ModelSource::Url(url) => {
+                let mut reader = crate::remote::HttpRangeReader::new(&url)
+                    .map_err(|e| anyhow::anyhow!("remote model open: {e}"))?;
+                let gguf = gguf_file::Content::read(&mut reader)?;
+                ModelWeights::from_gguf_partial(
+                    gguf,
+                    &mut reader,
+                    &self.primary_device,
+                    start as usize,
+                    end as usize,
+                )?
+            }
+        };
         println!(
             "📦 [Candle] Chargé couches {}..{} ({} couche(s) en mémoire sur {} au total)",
             start,

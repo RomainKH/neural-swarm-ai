@@ -8,6 +8,9 @@ pub mod pipeline;
 pub mod protocol;
 pub mod p2p;
 
+#[cfg(feature = "http")]
+pub mod remote;
+
 #[cfg(feature = "llama")]
 pub mod llama_backend;
 
