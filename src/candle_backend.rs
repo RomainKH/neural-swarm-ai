@@ -100,13 +100,23 @@ impl CandleBackend {
                 let mut reader = crate::remote::HttpRangeReader::new(&url)
                     .map_err(|e| anyhow::anyhow!("remote model open: {e}"))?;
                 let gguf = gguf_file::Content::read(&mut reader)?;
-                ModelWeights::from_gguf_partial(
+                // The reader coalesces the slice's contiguous tensors into large
+                // chunked range requests (see remote::MIN_CHUNK), so only the bytes
+                // this node actually needs are fetched — never the whole file.
+                let m = ModelWeights::from_gguf_partial(
                     gguf,
                     &mut reader,
                     &self.primary_device,
                     start as usize,
                     end as usize,
-                )?
+                )?;
+                println!(
+                    "📡 [Candle] {:.1} Mo streamés pour les couches {}..{} (téléchargement partiel)",
+                    reader.fetched_bytes as f64 / 1_048_576.0,
+                    start,
+                    end
+                );
+                m
             }
         };
         println!(
@@ -273,3 +283,4 @@ impl InferenceBackend for CandleBackend {
         Ok(vec![])
     }
 }
+

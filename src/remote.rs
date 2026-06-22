@@ -12,9 +12,12 @@
 
 use std::io::{self, Read, Seek, SeekFrom};
 
-/// Minimum bytes to fetch per range request — collapses the GGUF header's many
-/// tiny sequential reads into a couple of requests.
-const MIN_CHUNK: u64 = 4 * 1024 * 1024;
+/// Read-ahead window for SMALL reads only (the GGUF header is parsed via hundreds
+/// of tiny sequential reads — coalesce those into a few requests). LARGE reads
+/// (tensor payloads) are fetched at their exact size: candle reads each tensor in
+/// one shot, so reading exactly avoids the bandwidth blow-up that a big fixed
+/// read-ahead causes when candle's access pattern jumps between regions.
+const SMALL_READAHEAD: u64 = 256 * 1024;
 
 pub struct HttpRangeReader {
     url: String,
@@ -22,6 +25,8 @@ pub struct HttpRangeReader {
     len: u64,
     buf: Vec<u8>,
     buf_start: u64,
+    /// Total bytes actually pulled over the wire (for diagnostics).
+    pub fetched_bytes: u64,
 }
 
 fn io_err<E: std::fmt::Display>(e: E) -> io::Error {
@@ -42,12 +47,24 @@ impl HttpRangeReader {
             len,
             buf: Vec::new(),
             buf_start: 0,
+            fetched_bytes: 0,
         })
+    }
+
+    /// Pre-loads a contiguous byte range into the buffer in a SINGLE request.
+    /// The caller computes the span covering all tensors of its assigned layer
+    /// slice, so the dozens of per-tensor reads that follow all hit the buffer —
+    /// turning ~one-request-per-tensor into ~one-request-per-slice (big win on HF).
+    pub fn prefetch(&mut self, start: u64, len: u64) -> io::Result<()> {
+        self.fetch(start, len)
     }
 
     /// Fetches a range starting at `start` of at least `want` bytes into the buffer.
     fn fetch(&mut self, start: u64, want: u64) -> io::Result<()> {
-        let end = (start + want.max(MIN_CHUNK)).min(self.len); // exclusive
+        // Coalesce only TINY reads (GGUF header) into a small window; fetch large
+        // (tensor) reads at exactly their size so we never pull bytes we don't use.
+        let span = want.max(SMALL_READAHEAD.min(self.len.saturating_sub(start)));
+        let end = (start + span).min(self.len); // exclusive
         if end <= start {
             self.buf.clear();
             self.buf_start = start;
@@ -59,6 +76,7 @@ impl HttpRangeReader {
             .map_err(io_err)?;
         let mut data = Vec::with_capacity((end - start) as usize);
         resp.into_reader().read_to_end(&mut data)?;
+        self.fetched_bytes += data.len() as u64;
         self.buf = data;
         self.buf_start = start;
         Ok(())
