@@ -234,10 +234,18 @@ impl LayerWeights {
 
 #[derive(Debug, Clone)]
 pub struct ModelWeights {
-    pub tok_embeddings: Embedding,
+    /// Token embeddings — only loaded on the pipeline ENTRY node (owns layer 0).
+    pub tok_embeddings: Option<Embedding>,
+    /// Only the transformer layers assigned to THIS node (a contiguous slice).
     pub layers: Vec<LayerWeights>,
-    pub norm: RmsNorm,
-    pub output: QMatMul,
+    /// Final norm — only on the EXIT node (owns the last layer).
+    pub norm: Option<RmsNorm>,
+    /// Output (un-embedding) head — only on the EXIT node.
+    pub output: Option<QMatMul>,
+    /// Absolute index of `layers[0]` in the full model (0 for the entry node).
+    pub layer_offset: usize,
+    /// Total number of layers in the full model (so the node knows the global shape).
+    pub total_layers: usize,
     pub masks: HashMap<usize, Tensor>,
     pub span: tracing::Span,
     pub span_output: tracing::Span,
@@ -313,23 +321,46 @@ impl ModelWeights {
                 span_mlp,
             })
         }
+        let n_layer = ct.hparams.n_layer as usize;
         let span = tracing::span!(tracing::Level::TRACE, "model");
         let span_output = tracing::span!(tracing::Level::TRACE, "output");
         Ok(Self {
-            tok_embeddings: Embedding::new(tok_embeddings, ct.hparams.n_embd as usize),
+            tok_embeddings: Some(Embedding::new(tok_embeddings, ct.hparams.n_embd as usize)),
             layers,
-            norm,
-            output: QMatMul::from_qtensor(output)?,
+            norm: Some(norm),
+            output: Some(QMatMul::from_qtensor(output)?),
+            layer_offset: 0,
+            total_layers: n_layer,
             masks: HashMap::new(),
             span,
             span_output,
         })
     }
 
+    /// Loads the full model (all layers + embeddings + output head).
     pub fn from_gguf<R: std::io::Seek + std::io::Read>(
         ct: gguf_file::Content,
         reader: &mut R,
         device: &Device,
+    ) -> Result<Self> {
+        let block_count = ct
+            .metadata
+            .get("llama.block_count")
+            .and_then(|v| v.to_u32().ok())
+            .unwrap_or(0) as usize;
+        Self::from_gguf_partial(ct, reader, device, 0, block_count)
+    }
+
+    /// Loads ONLY the layers in `[start_layer, end_layer)` into memory, plus the
+    /// token embeddings if this node owns layer 0, and the final norm + output head
+    /// if it owns the last layer. This is what lets a weak machine hold just a slice
+    /// of a model far too big to fit whole.
+    pub fn from_gguf_partial<R: std::io::Seek + std::io::Read>(
+        ct: gguf_file::Content,
+        reader: &mut R,
+        device: &Device,
+        start_layer: usize,
+        end_layer: usize,
     ) -> Result<Self> {
         let md_get = |s: &str| match ct.metadata.get(s) {
             None => candle_core::bail!("cannot find {s} in metadata"),
@@ -357,18 +388,38 @@ impl ModelWeights {
         let (cos, sin) = precomput_freqs_cis(rope_dim, rope_freq_base, device)?;
         let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?;
 
-        let tok_embeddings_q = ct.tensor(reader, "token_embd.weight", device)?;
-        let tok_embeddings = tok_embeddings_q.dequantize(device)?;
-        let norm = RmsNorm::from_qtensor(
-            ct.tensor(reader, "output_norm.weight", device)?,
-            rms_norm_eps,
-        )?;
-        let output = match ct.tensor(reader, "output.weight", device) {
-            Ok(tensor) => tensor,
-            Err(_) => tok_embeddings_q,
+        // Clamp the requested slice to the real model bounds.
+        let start = start_layer.min(block_count);
+        let end = end_layer.min(block_count).max(start);
+        let is_entry = start == 0;
+        let is_exit = end >= block_count;
+
+        // Token embeddings: only the entry node needs them to embed input tokens.
+        let tok_embeddings = if is_entry {
+            let q = ct.tensor(reader, "token_embd.weight", device)?;
+            Some(Embedding::new(q.dequantize(device)?, embedding_length))
+        } else {
+            None
         };
-        let mut layers = Vec::with_capacity(block_count);
-        for layer_idx in 0..block_count {
+
+        // Final norm + output head: only the exit node produces logits.
+        let (norm, output) = if is_exit {
+            let norm = RmsNorm::from_qtensor(
+                ct.tensor(reader, "output_norm.weight", device)?,
+                rms_norm_eps,
+            )?;
+            // Some models tie the output head to the input embeddings.
+            let output_q = match ct.tensor(reader, "output.weight", device) {
+                Ok(tensor) => tensor,
+                Err(_) => ct.tensor(reader, "token_embd.weight", device)?,
+            };
+            (Some(norm), Some(QMatMul::from_qtensor(output_q)?))
+        } else {
+            (None, None)
+        };
+
+        let mut layers = Vec::with_capacity(end - start);
+        for layer_idx in start..end {
             let prefix = format!("blk.{layer_idx}");
             let attention_wq = ct.tensor(reader, &format!("{prefix}.attn_q.weight"), device)?;
             let attention_wk = ct.tensor(reader, &format!("{prefix}.attn_k.weight"), device)?;
@@ -439,10 +490,12 @@ impl ModelWeights {
         let span = tracing::span!(tracing::Level::TRACE, "model");
         let span_output = tracing::span!(tracing::Level::TRACE, "output");
         Ok(Self {
-            tok_embeddings: Embedding::new(tok_embeddings, embedding_length),
+            tok_embeddings,
             layers,
             norm,
-            output: QMatMul::from_qtensor(output)?,
+            output,
+            layer_offset: start,
+            total_layers: block_count,
             masks: HashMap::new(),
             span,
             span_output,
@@ -470,7 +523,11 @@ impl ModelWeights {
             Some(self.mask(seq_len, x.device())?)
         };
         let _enter = self.span.enter();
-        let mut layer_in = self.tok_embeddings.forward(x)?;
+        let tok_embeddings = self
+            .tok_embeddings
+            .as_ref()
+            .ok_or_else(|| candle_core::Error::Msg("forward() needs tok_embeddings (entry node)".into()))?;
+        let mut layer_in = tok_embeddings.forward(x)?;
         for layer in self.layers.iter_mut() {
             let x = layer_in;
             let residual = &x;
@@ -486,9 +543,17 @@ impl ModelWeights {
             let x = (x + residual)?;
             layer_in = x
         }
-        let x = self.norm.forward(&layer_in)?;
+        let norm = self
+            .norm
+            .as_ref()
+            .ok_or_else(|| candle_core::Error::Msg("forward() needs norm (exit node)".into()))?;
+        let output = self
+            .output
+            .as_ref()
+            .ok_or_else(|| candle_core::Error::Msg("forward() needs output (exit node)".into()))?;
+        let x = norm.forward(&layer_in)?;
         let x = x.i((.., seq_len - 1, ..))?;
         let _enter = self.span_output.enter();
-        self.output.forward(&x)
+        output.forward(&x)
     }
 }

@@ -33,6 +33,15 @@ use anyhow::Result;
 /// }
 /// ```
 pub trait InferenceBackend: Send + Sync {
+    /// Ensures the backend holds (only) the layers in `[start_layer, end_layer)`,
+    /// loading that slice on demand. Called before `run_layers` so a node never
+    /// needs to hold more of the model than the range it was assigned.
+    ///
+    /// Default: no-op (backends that always hold the whole model ignore it).
+    fn ensure_layers(&mut self, _start_layer: u32, _end_layer: u32) -> Result<()> {
+        Ok(())
+    }
+
     /// Injects a serialized KV Cache state into the inference context.
     ///
     /// This is called before `run_layers` to restore state received from a

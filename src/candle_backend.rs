@@ -12,6 +12,10 @@ pub struct CandleBackend {
     pub model: Option<ModelWeights>,
     pub dtype: DType,
     pub intermediate_state: Option<Tensor>,
+    /// GGUF file path this node loads its layer slice from.
+    pub source: Option<std::path::PathBuf>,
+    /// The absolute layer range currently resident in memory, if any.
+    pub loaded_range: Option<(u32, u32)>,
     // TODO: Add proper distributed KV cache
 }
 
@@ -22,15 +26,63 @@ impl CandleBackend {
             model: None,
             dtype,
             intermediate_state: None,
+            source: None,
+            loaded_range: None,
         }
     }
 
-    /// Loads a Llama model from a GGUF file.
+    /// Loads the FULL model from a GGUF file (all layers). Use for a single-node
+    /// setup or the coordinator; distributed nodes prefer lazy partial loading.
     pub fn load_model(&mut self, filename: &std::path::Path) -> Result<()> {
         let mut file = std::fs::File::open(filename)?;
         let gguf = gguf_file::Content::read(&mut file)?;
         let model = ModelWeights::from_gguf(gguf, &mut file, &self.primary_device)?;
+        let total = model.total_layers as u32;
         self.model = Some(model);
+        self.source = Some(filename.to_path_buf());
+        self.loaded_range = Some((0, total));
+        Ok(())
+    }
+
+    /// Registers the GGUF file WITHOUT loading any layers yet. The actual slice is
+    /// loaded lazily by `ensure_layers` based on the range each task requests — so
+    /// a node only ever holds the layers it was assigned, never the whole model.
+    pub fn set_model_source(&mut self, filename: &std::path::Path) {
+        self.source = Some(filename.to_path_buf());
+        self.model = None;
+        self.loaded_range = None;
+    }
+
+    /// Ensures the layer slice `[start, end)` is the one resident in memory,
+    /// (re)loading just that slice from the GGUF source if the assignment changed.
+    /// No-op if the model was already fully/correctly loaded for this range.
+    pub fn load_layer_range(&mut self, start: u32, end: u32) -> Result<()> {
+        if self.loaded_range == Some((start, end)) && self.model.is_some() {
+            return Ok(());
+        }
+        let path = self
+            .source
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("CandleBackend: no model source set"))?;
+        let mut file = std::fs::File::open(&path)?;
+        let gguf = gguf_file::Content::read(&mut file)?;
+        let model = ModelWeights::from_gguf_partial(
+            gguf,
+            &mut file,
+            &self.primary_device,
+            start as usize,
+            end as usize,
+        )?;
+        println!(
+            "📦 [Candle] Chargé couches {}..{} ({} couche(s) en mémoire sur {} au total)",
+            start,
+            end,
+            model.layers.len(),
+            model.total_layers
+        );
+        self.model = Some(model);
+        self.loaded_range = Some((start, end));
+        self.intermediate_state = None;
         Ok(())
     }
 }
@@ -48,6 +100,10 @@ enum KVCacheState {
 }
 
 impl InferenceBackend for CandleBackend {
+    fn ensure_layers(&mut self, start_layer: u32, end_layer: u32) -> Result<()> {
+        self.load_layer_range(start_layer, end_layer)
+    }
+
     fn set_state(&mut self, state: &[u8]) -> Result<()> {
         if !state.is_empty() {
             let result: std::result::Result<KVCacheState, _> = bincode::deserialize(state);
@@ -102,23 +158,29 @@ impl InferenceBackend for CandleBackend {
         );
 
         if let Some(ref mut model) = self.model {
-            // Track sequence length manually or get from input
             let seq_len = tokens.len();
+            let offset = model.layer_offset;
+            let total = model.total_layers;
 
+            // Entry node embeds the tokens; every other node ingests the hidden
+            // state forwarded by the previous stage.
             let mut layer_in = if start_layer == 0 {
+                let tok = model.tok_embeddings.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("entry node (start_layer 0) is missing token embeddings")
+                })?;
                 let tokens_u32: Vec<u32> = tokens.iter().map(|&t| t as u32).collect();
                 let input =
                     Tensor::new(tokens_u32.as_slice(), &self.primary_device)?.unsqueeze(0)?;
-                model.tok_embeddings.forward(&input)?
+                tok.forward(&input)?
+            } else if let Some(state) = self.intermediate_state.take() {
+                state
             } else {
-                if let Some(state) = self.intermediate_state.take() {
-                    state
-                } else {
-                    Tensor::zeros((1, seq_len, 4096), self.dtype, &self.primary_device)?
-                }
+                return Err(anyhow::anyhow!(
+                    "non-entry node received no upstream hidden state"
+                ));
             };
 
-            let index_pos = sequence_id; // Use real sequence_id instead of Default::default()
+            let index_pos = sequence_id;
 
             let mask = if seq_len == 1 {
                 None
@@ -126,11 +188,10 @@ impl InferenceBackend for CandleBackend {
                 Some(model.mask(seq_len, &self.primary_device)?)
             };
 
-            // Limit end_layer to max layers
-            let actual_end_layer = std::cmp::min(end_layer as usize, model.layers.len());
-
-            for layer_idx in (start_layer as usize)..actual_end_layer {
-                let layer = &mut model.layers[layer_idx];
+            // Only iterate layers this node actually holds in memory ([offset, offset+len)).
+            let local_end = (end_layer as usize).min(offset + model.layers.len());
+            for layer_idx in (start_layer as usize).max(offset)..local_end {
+                let layer = &mut model.layers[layer_idx - offset];
 
                 let x = &layer_in;
                 let residual = x;
@@ -149,19 +210,26 @@ impl InferenceBackend for CandleBackend {
                 layer_in = x;
             }
 
-            // Save intermediate state (to be serialized in get_state)
+            // Save intermediate state (serialized in get_state, forwarded to the next stage)
             self.intermediate_state = Some(layer_in.clone());
 
-            if end_layer as usize >= model.layers.len() {
-                let x = model.norm.forward(&layer_in)?;
+            // The exit node (owns the last layer) applies the final norm + output head.
+            if end_layer as usize >= total {
+                let norm = model
+                    .norm
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("exit node is missing the final norm"))?;
+                let output = model
+                    .output
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("exit node is missing the output head"))?;
+                let x = norm.forward(&layer_in)?;
                 let x = x.i((.., seq_len - 1, ..))?;
-                let logits_tensor = model.output.forward(&x)?;
-
-                // Flatten logits back to vec
+                let logits_tensor = output.forward(&x)?;
                 let logits: Vec<f32> = logits_tensor.flatten_all()?.to_vec1()?;
                 return Ok(logits);
             } else {
-                // If not final layer, return empty logits (next node will compute)
+                // Not the final stage — the next node continues from this state.
                 return Ok(vec![]);
             }
         }

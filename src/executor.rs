@@ -71,6 +71,10 @@ impl Executor {
             route,
         } = task
         {
+            // 0. Make sure this node holds exactly the assigned layer slice in memory.
+            //    Must run BEFORE set_state: a (re)load resets any injected hidden state.
+            backend.ensure_layers(start_layer, end_layer)?;
+
             // 1. Decrypt and Decompress received state, then inject it into the backend.
             //
             // An empty `input_state` means this node is the pipeline entry point
