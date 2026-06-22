@@ -74,22 +74,12 @@ impl InferenceBackend for CandleBackend {
             let (d1, d2, d3) = state.dims3()?;
             let data: Vec<f32> = state.flatten_all()?.to_vec1()?;
 
-            let mut max_abs: f32 = 0.0;
-            for &val in &data {
-                let abs_val = val.abs();
-                if abs_val > max_abs {
-                    max_abs = abs_val;
-                }
-            }
-
-            let scale = max_abs / 127.0;
-            let q_data: Vec<i8> = if scale == 0.0 {
-                vec![0; data.len()]
-            } else {
-                data.iter().map(|&v| (v / scale).round() as i8).collect()
-            };
-
-            let state_enum = KVCacheState::Q8_0(d1, d2, d3, scale, q_data);
+            // Serialize the hidden state losslessly (F32). These are inter-layer
+            // ACTIVATIONS transiting between pipeline stages: int8 (Q8_0) quantization
+            // with a single global scale corrupts them badly (outliers dominate the
+            // scale), which garbles generation once a model is split across nodes.
+            // zstd still compresses the F32 payload before it hits the wire.
+            let state_enum = KVCacheState::F32(d1, d2, d3, data);
             let buffer = bincode::serialize(&state_enum)?;
             return Ok(buffer);
         }

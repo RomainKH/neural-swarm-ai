@@ -71,18 +71,26 @@ impl Executor {
             route,
         } = task
         {
-            // 1. Decrypt and Decompress received state
-            // Use task_id as AAD to prevent replay/cross-task attacks
-            let decrypted = crate::crypto::decrypt_with_aad(
-                &input_state,
-                &self.cluster_key,
-                task_id.as_bytes(),
-            )
-            .map_err(|e| anyhow::anyhow!("Decryption failed: {}", e))?;
-            let decompressed = crate::crypto::decompress(&decrypted)?;
+            // 1. Decrypt and Decompress received state, then inject it into the backend.
+            //
+            // An empty `input_state` means this node is the pipeline entry point
+            // (`start_layer == 0`): there is no upstream hidden state to ingest — the
+            // backend rebuilds it from `tokens` and maintains its own KV cache across
+            // calls. We therefore skip the crypto envelope entirely in that case
+            // (decrypting empty bytes would otherwise fail).
+            if !input_state.is_empty() {
+                // Use task_id as AAD to prevent replay/cross-task attacks
+                let decrypted = crate::crypto::decrypt_with_aad(
+                    &input_state,
+                    &self.cluster_key,
+                    task_id.as_bytes(),
+                )
+                .map_err(|e| anyhow::anyhow!("Decryption failed: {}", e))?;
+                let decompressed = crate::crypto::decompress(&decrypted)?;
 
-            // 2. Inject state into backend
-            backend.set_state(&decompressed)?;
+                // 2. Inject state into backend
+                backend.set_state(&decompressed)?;
+            }
 
             // 3. Run inference on assigned layers
             let logits =
