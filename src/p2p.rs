@@ -5,6 +5,8 @@ use libp2p::{
 };
 use std::error::Error;
 use std::time::Duration;
+use tokio::sync::mpsc;
+use futures::StreamExt;
 use crate::protocol::SwarmMessage;
 
 #[derive(libp2p::swarm::NetworkBehaviour)]
@@ -16,12 +18,18 @@ pub struct SwarmBehaviour {
     pub req_resp: request_response::cbor::Behaviour<SwarmMessage, SwarmMessage>,
 }
 
-pub async fn setup_p2p_node() -> Result<(Swarm<SwarmBehaviour>, PeerId), Box<dyn Error>> {
+pub struct P2pNode {
+    pub peer_id: PeerId,
+    pub sender: mpsc::Sender<(PeerId, SwarmMessage)>,
+    pub receiver: mpsc::Receiver<(PeerId, SwarmMessage)>,
+}
+
+pub async fn setup_p2p_node() -> Result<P2pNode, Box<dyn Error>> {
     let local_key = identity::Keypair::generate_ed25519();
     let local_peer_id = PeerId::from(local_key.public());
     println!("🔑 Local Peer ID: {}", local_peer_id);
 
-    let (relay_transport, relay_client) = relay::client::new(local_peer_id);
+    let (_relay_transport, relay_client) = relay::client::new(local_peer_id);
 
     let mut swarm = libp2p::SwarmBuilder::with_existing_identity(local_key)
         .with_tokio()
@@ -51,5 +59,35 @@ pub async fn setup_p2p_node() -> Result<(Swarm<SwarmBehaviour>, PeerId), Box<dyn
     // Listen on all interfaces, random port
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
-    Ok((swarm, local_peer_id))
+    let (tx_out, mut rx_out) = mpsc::channel::<(PeerId, SwarmMessage)>(100);
+    let (tx_in, rx_in) = mpsc::channel::<(PeerId, SwarmMessage)>(100);
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                event = swarm.select_next_some() => {
+                    match event {
+                        libp2p::swarm::SwarmEvent::Behaviour(SwarmBehaviourEvent::ReqResp(
+                            request_response::Event::Message { peer, message }
+                        )) => {
+                            if let request_response::Message::Request { request, .. } = message {
+                                let _ = tx_in.send((peer, request)).await;
+                            }
+                        }
+                        // Ignore other events for now
+                        _ => {}
+                    }
+                }
+                Some((peer, msg)) = rx_out.recv() => {
+                    swarm.behaviour_mut().req_resp.send_request(&peer, msg);
+                }
+            }
+        }
+    });
+
+    Ok(P2pNode {
+        peer_id: local_peer_id,
+        sender: tx_out,
+        receiver: rx_in,
+    })
 }

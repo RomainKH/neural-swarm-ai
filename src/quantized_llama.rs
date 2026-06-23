@@ -130,6 +130,10 @@ pub struct LayerWeights {
     pub attention_wk: QMatMul,
     pub attention_wv: QMatMul,
     pub attention_wo: QMatMul,
+    // Additive q/k/v projection biases (Qwen2 has them; Llama/Mistral don't).
+    pub attention_bq: Option<Tensor>,
+    pub attention_bk: Option<Tensor>,
+    pub attention_bv: Option<Tensor>,
     pub attention_norm: RmsNorm,
     pub mlp_or_moe: MlpOrMoe,
     pub ffn_norm: RmsNorm,
@@ -173,6 +177,10 @@ impl LayerWeights {
         let q = self.attention_wq.forward(x)?;
         let k = self.attention_wk.forward(x)?;
         let v = self.attention_wv.forward(x)?;
+        // Qwen2-style additive biases on the projections (no-op for Llama/Mistral).
+        let q = match &self.attention_bq { Some(b) => q.broadcast_add(b)?, None => q };
+        let k = match &self.attention_bk { Some(b) => k.broadcast_add(b)?, None => k };
+        let v = match &self.attention_bv { Some(b) => v.broadcast_add(b)?, None => v };
 
         let q = q
             .reshape((b_sz, seq_len, self.n_head, self.head_dim))?
@@ -306,6 +314,9 @@ impl ModelWeights {
                 attention_wk: QMatMul::from_qtensor(attention_wk)?,
                 attention_wv: QMatMul::from_qtensor(attention_wv)?,
                 attention_wo: QMatMul::from_qtensor(attention_wo)?,
+                attention_bq: None,
+                attention_bk: None,
+                attention_bv: None,
                 attention_norm: RmsNorm::from_qtensor(attention_norm, 1e-5)?,
                 mlp_or_moe,
                 ffn_norm: RmsNorm::from_qtensor(ffn_norm, 1e-5)?,
@@ -343,9 +354,16 @@ impl ModelWeights {
         reader: &mut R,
         device: &Device,
     ) -> Result<Self> {
+        // Metadata keys are namespaced by architecture (llama.*, qwen2.*, …).
+        let arch = ct
+            .metadata
+            .get("general.architecture")
+            .and_then(|v| v.to_string().ok())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "llama".to_string());
         let block_count = ct
             .metadata
-            .get("llama.block_count")
+            .get(&format!("{arch}.block_count"))
             .and_then(|v| v.to_u32().ok())
             .unwrap_or(0) as usize;
         Self::from_gguf_partial(ct, reader, device, 0, block_count)
@@ -362,27 +380,43 @@ impl ModelWeights {
         start_layer: usize,
         end_layer: usize,
     ) -> Result<Self> {
-        let md_get = |s: &str| match ct.metadata.get(s) {
-            None => candle_core::bail!("cannot find {s} in metadata"),
-            Some(v) => Ok(v),
+        // GGUF namespaces hyperparameters by architecture: llama.*, qwen2.*, etc.
+        // Detect it so the same loader handles Llama/Mistral/SmolLM (llama) and Qwen2.
+        let arch = ct
+            .metadata
+            .get("general.architecture")
+            .and_then(|v| v.to_string().ok())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "llama".to_string());
+        let md_get = |suffix: &str| {
+            let key = format!("{arch}.{suffix}");
+            match ct.metadata.get(&key) {
+                None => candle_core::bail!("cannot find {key} in metadata"),
+                Some(v) => Ok(v),
+            }
         };
 
         // Parameter extraction from metadata.
-        let n_expert = md_get("llama.expert_count")
+        let n_expert = md_get("expert_count")
             .and_then(|v| v.to_u32())
             .unwrap_or(0) as usize;
-        let n_expert_used = md_get("llama.expert_used_count")
+        let n_expert_used = md_get("expert_used_count")
             .and_then(|v| v.to_u32())
             .unwrap_or(0) as usize;
-        let head_count = md_get("llama.attention.head_count")?.to_u32()? as usize;
-        let head_count_kv = md_get("llama.attention.head_count_kv")?.to_u32()? as usize;
-        let block_count = md_get("llama.block_count")?.to_u32()? as usize;
-        let embedding_length = md_get("llama.embedding_length")?.to_u32()? as usize;
-        let rope_dim = md_get("llama.rope.dimension_count")?.to_u32()? as usize;
+        let head_count = md_get("attention.head_count")?.to_u32()? as usize;
+        let head_count_kv = md_get("attention.head_count_kv")?.to_u32()? as usize;
+        let block_count = md_get("block_count")?.to_u32()? as usize;
+        let embedding_length = md_get("embedding_length")?.to_u32()? as usize;
+        // Qwen2 omits rope.dimension_count; it equals head_dim = embedding/head_count.
+        let rope_dim = md_get("rope.dimension_count")
+            .and_then(|v| v.to_u32())
+            .map(|v| v as usize)
+            .unwrap_or(embedding_length / head_count);
         // Strangely this value is generally 1e-6 in GGUF file but used to be 1e-5 by default.
-        let rms_norm_eps = md_get("llama.attention.layer_norm_rms_epsilon")?.to_f32()? as f64;
+        let rms_norm_eps = md_get("attention.layer_norm_rms_epsilon")?.to_f32()? as f64;
 
-        let rope_freq_base = md_get("llama.rope.freq_base")
+        // Qwen2.5 uses a RoPE base of 1e6; Llama-3.2 uses 5e5; older Llama 1e4.
+        let rope_freq_base = md_get("rope.freq_base")
             .and_then(|m| m.to_f32())
             .unwrap_or(10000f32);
         let (cos, sin) = precomput_freqs_cis(rope_dim, rope_freq_base, device)?;
@@ -426,6 +460,15 @@ impl ModelWeights {
             let attention_wv = ct.tensor(reader, &format!("{prefix}.attn_v.weight"), device)?;
             let attention_wo =
                 ct.tensor(reader, &format!("{prefix}.attn_output.weight"), device)?;
+            // Optional q/k/v biases (present in Qwen2, absent in Llama). Stored as F32.
+            let mut load_bias = |name: &str| -> Option<Tensor> {
+                ct.tensor(reader, &format!("{prefix}.{name}"), device)
+                    .ok()
+                    .and_then(|q| q.dequantize(device).ok())
+            };
+            let attention_bq = load_bias("attn_q.bias");
+            let attention_bk = load_bias("attn_k.bias");
+            let attention_bv = load_bias("attn_v.bias");
             let mlp_or_moe = if n_expert <= 1 {
                 let feed_forward_w1 =
                     ct.tensor(reader, &format!("{prefix}.ffn_gate.weight"), device)?;
@@ -472,6 +515,9 @@ impl ModelWeights {
                 attention_wk: QMatMul::from_qtensor(attention_wk)?,
                 attention_wv: QMatMul::from_qtensor(attention_wv)?,
                 attention_wo: QMatMul::from_qtensor(attention_wo)?,
+                attention_bq,
+                attention_bk,
+                attention_bv,
                 attention_norm: RmsNorm::from_qtensor(attention_norm, rms_norm_eps)?,
                 mlp_or_moe,
                 ffn_norm: RmsNorm::from_qtensor(ffn_norm, rms_norm_eps)?,
@@ -513,6 +559,39 @@ impl ModelWeights {
             self.masks.insert(t, mask.clone());
             Ok(mask)
         }
+    }
+
+    /// Entry I/O (coordinator role): embed token ids into the initial hidden state
+    /// `[1, seq, d]`. Used by a master that delegates the transformer layers to the swarm
+    /// but keeps the cheap embedding/un-embedding itself. Requires tok_embeddings loaded
+    /// (e.g. `from_gguf_partial(.., 0, 0)`).
+    pub fn embed_tokens(&self, tokens: &[i32], device: &Device) -> Result<Tensor> {
+        let emb = self
+            .tok_embeddings
+            .as_ref()
+            .ok_or_else(|| candle_core::Error::Msg("embed_tokens: tok_embeddings not loaded".into()))?;
+        let ids: Vec<u32> = tokens.iter().map(|&t| t as u32).collect();
+        let input = Tensor::new(ids.as_slice(), device)?.unsqueeze(0)?;
+        emb.forward(&input)
+    }
+
+    /// Exit I/O (coordinator role): final RMSNorm + output head on the LAST position of the
+    /// hidden state `[1, seq, d]` → logits over the vocabulary. Requires norm + output
+    /// loaded (e.g. `from_gguf_partial(.., n_layers, n_layers)`).
+    pub fn project_logits(&self, hidden: &Tensor) -> Result<Vec<f32>> {
+        let norm = self
+            .norm
+            .as_ref()
+            .ok_or_else(|| candle_core::Error::Msg("project_logits: final norm not loaded".into()))?;
+        let output = self
+            .output
+            .as_ref()
+            .ok_or_else(|| candle_core::Error::Msg("project_logits: output head not loaded".into()))?;
+        let (_b, seq_len, _d) = hidden.dims3()?;
+        let x = norm.forward(hidden)?;
+        let x = x.i((.., seq_len - 1, ..))?;
+        let logits = output.forward(&x)?;
+        logits.flatten_all()?.to_vec1()
     }
 
     pub fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
